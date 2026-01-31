@@ -5,13 +5,13 @@ const EXPLORER_API = '/api/transactions';
 const PRICES_API = '/api/prices';
 const TOKEN_LIST_URL = 'https://raw.githubusercontent.com/InjectiveLabs/injective-lists/master/json/tokens/mainnet.json';
 const TOKEN_CACHE_KEY = 'inj_token_cache_v2';
-const PRICE_CACHE_KEY = 'inj_price_cache_v1';
+const PRICE_CACHE_KEY = 'inj_price_cache_v2'; // v2: Injective DEX + Pyth (removed CoinGecko)
 const ITEMS_PER_PAGE = 25;
 
 // ============================================================================
 // PRICE CACHE - For historical prices
 // ============================================================================
-const priceCache = { data: {}, loaded: false };
+const priceCache = { data: {}, sources: {}, loaded: false };
 
 function loadPriceCache() {
   if (priceCache.loaded) return;
@@ -19,10 +19,11 @@ function loadPriceCache() {
     try {
       const cached = localStorage.getItem(PRICE_CACHE_KEY);
       if (cached) {
-        const { data, timestamp } = JSON.parse(cached);
+        const { data, sources, timestamp } = JSON.parse(cached);
         // Use cache if less than 24 hours old
         if (Date.now() - timestamp < 24 * 60 * 60 * 1000) {
-          priceCache.data = data;
+          priceCache.data = data || {};
+          priceCache.sources = sources || {};
         }
       }
     } catch (e) { /* ignore */ }
@@ -34,148 +35,62 @@ function savePriceCache() {
   try {
     localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify({
       data: priceCache.data,
+      sources: priceCache.sources,
       timestamp: Date.now()
     }));
   } catch (e) { /* ignore */ }
 }
 
-async function fetchPricesBatch(requests, swapPrices = {}) {
-  // Filter out already cached (including swap-derived prices)
+// Fetch prices from API - returns { prices, sources, missing, warning }
+async function fetchPricesBatch(requests) {
   const uncached = requests.filter(r => {
     const key = `${r.token.toUpperCase()}-${r.date}`;
     return priceCache.data[key] === undefined;
   });
 
-  if (uncached.length === 0) return;
+  if (uncached.length === 0) return { missing: [], sources: {} };
 
   try {
     const response = await fetch(PRICES_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requests: uncached,
-        swapPrices: swapPrices // Pass swap-derived prices for the API to use as fallback
-      }),
+      body: JSON.stringify({ requests: uncached }),
     });
 
     if (response.ok) {
       const data = await response.json();
-      // Merge into cache
+      // Merge prices into cache (values can be number or null)
       Object.assign(priceCache.data, data.prices || {});
+      // Merge sources into cache
+      Object.assign(priceCache.sources, data.sources || {});
+      return {
+        missing: data.missing || [],
+        sources: data.sources || {},
+        warning: data.warning
+      };
     }
   } catch (e) { /* ignore */ }
+  return { missing: [], sources: {} };
 }
 
+// Get price - returns number or null if not available
 function getPrice(token, date) {
   const key = `${token.toUpperCase()}-${date}`;
-  return priceCache.data[key] || 0;
+  const price = priceCache.data[key];
+  // Return null if not found or explicitly null, otherwise the price
+  return price === undefined || price === null ? null : price;
 }
 
-// Extract prices from swap transactions by looking at paired amounts
-// When someone swaps X of TokenA for Y of USDT, price of TokenA = Y/X
-function extractSwapPrices(parsedTransactions, rawTransactions, walletAddress) {
-  const swapPrices = {};
-  const stables = ['USDT', 'USDC', 'DAI', 'BUSD', 'UST', 'FRAX'];
+// Get price source - returns 'injective-dex', 'pyth', or null
+function getPriceSource(token, date) {
+  const key = `${token.toUpperCase()}-${date}`;
+  return priceCache.sources?.[key] || null;
+}
 
-  // Build a map of txHash -> raw transaction for event parsing
-  const txMap = {};
-  for (const tx of rawTransactions) {
-    const hash = tx.hash || tx.txHash || tx.id;
-    if (hash) txMap[hash] = tx;
-  }
-
-  // Group parsed transactions by txHash to find paired swaps
-  const txGroups = {};
-  for (const tx of parsedTransactions) {
-    if (!txGroups[tx.txHash]) txGroups[tx.txHash] = [];
-    txGroups[tx.txHash].push(tx);
-  }
-
-  // Look for swap pairs (one positive, one negative amount in same tx)
-  for (const [hash, txList] of Object.entries(txGroups)) {
-    if (txList.length < 2) continue;
-
-    const inflows = txList.filter(t => t.amount && !t.amount.startsWith('-') && t.asset);
-    const outflows = txList.filter(t => t.amount && t.amount.startsWith('-') && t.asset);
-
-    // If we have exactly one inflow and one outflow, it's likely a swap
-    if (inflows.length === 1 && outflows.length === 1) {
-      const inf = inflows[0];
-      const out = outflows[0];
-      const infAmt = parseFloat(inf.amount.replace(/,/g, '')) || 0;
-      const outAmt = Math.abs(parseFloat(out.amount.replace(/,/g, '')) || 0);
-
-      if (infAmt > 0 && outAmt > 0) {
-        // If one side is a stablecoin, we can derive the price of the other
-        if (stables.includes(inf.asset.toUpperCase())) {
-          // Received stable, sent token: price of token = stableAmount / tokenAmount
-          const price = infAmt / outAmt;
-          const key = `${out.asset.toUpperCase()}-${out.dateStr}`;
-          if (!swapPrices[key] || price > 0) {
-            swapPrices[key] = price;
-          }
-        } else if (stables.includes(out.asset.toUpperCase())) {
-          // Sent stable, received token: price of token = stableAmount / tokenAmount
-          const price = outAmt / infAmt;
-          const key = `${inf.asset.toUpperCase()}-${inf.dateStr}`;
-          if (!swapPrices[key] || price > 0) {
-            swapPrices[key] = price;
-          }
-        }
-      }
-    }
-  }
-
-  // Also try to parse events from raw transactions for more accurate data
-  for (const rawTx of rawTransactions) {
-    const events = rawTx.logs?.[0]?.events || rawTx.events || [];
-    const hash = rawTx.hash || rawTx.txHash || rawTx.id;
-    const timestamp = rawTx.blockTimestamp || rawTx.block_timestamp || rawTx.timestamp;
-    if (!timestamp) continue;
-
-    const date = new Date(timestamp);
-    if (isNaN(date.getTime())) continue;
-    const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-
-    for (const event of events) {
-      // Look for trade execution events
-      if (event.type === 'coin_received' || event.type === 'coin_spent' || event.type === 'transfer') {
-        const attrs = event.attributes || [];
-        const amountAttr = attrs.find(a => a.key === 'amount');
-        if (amountAttr?.value) {
-          // Parse amount like "1000000peggy0x..." or "500000inj"
-          const match = amountAttr.value.match(/^(\d+)(.+)$/);
-          if (match) {
-            const rawAmount = match[1];
-            const denom = match[2];
-            const { symbol, decimals } = getTokenInfo(denom);
-            const amount = parseFloat(rawAmount) / Math.pow(10, decimals);
-
-            // Store for later cross-referencing
-            // This helps when we see both sides of a trade in events
-          }
-        }
-      }
-
-      // Injective-specific spot trade events
-      if (event.type === 'spot_trade' || event.type === 'derivative_trade') {
-        const attrs = event.attributes || [];
-        const getAttr = (key) => attrs.find(a => a.key === key)?.value;
-
-        const price = parseFloat(getAttr('price') || '0');
-        const quantity = parseFloat(getAttr('quantity') || '0');
-        const baseDenom = getAttr('base_denom') || getAttr('base_currency');
-
-        if (price > 0 && baseDenom) {
-          const { symbol } = getTokenInfo(baseDenom);
-          const key = `${symbol.toUpperCase()}-${dateStr}`;
-          swapPrices[key] = price;
-        }
-      }
-    }
-  }
-
-  return swapPrices;
+// Check if price is missing
+function isPriceMissing(token, date) {
+  const key = `${token.toUpperCase()}-${date}`;
+  return priceCache.data[key] === null || priceCache.data[key] === undefined;
 }
 
 // ============================================================================
@@ -389,9 +304,10 @@ function parseCoinFromString(coinStr) {
   return { amount, symbol, denom, rawAmount };
 }
 
-// Helper: Extract all coin movements from transaction events
+// Helper: Extract all coin movements from transaction events (deduplicated by denom)
 function extractCoinMovements(tx, walletAddress) {
-  const movements = { received: [], spent: [] };
+  const received = {}; // { denom: { amount, symbol, denom, rawAmount } }
+  const spent = {};    // { denom: { amount, symbol, denom, rawAmount } }
   const events = tx.logs?.[0]?.events || tx.events || [];
   const walletLower = walletAddress.toLowerCase();
 
@@ -399,6 +315,7 @@ function extractCoinMovements(tx, walletAddress) {
     const attrs = event.attributes || [];
     const getAttr = (key) => attrs.find(a => a.key === key)?.value;
 
+    // Only process coin_received and coin_spent (skip transfer to avoid dupes)
     if (event.type === 'coin_received') {
       const receiver = getAttr('receiver')?.toLowerCase();
       const amount = getAttr('amount');
@@ -406,7 +323,14 @@ function extractCoinMovements(tx, walletAddress) {
         const coins = amount.split(',');
         for (const c of coins) {
           const parsed = parseCoinFromString(c.trim());
-          if (parsed) movements.received.push(parsed);
+          if (parsed) {
+            // Aggregate by denom
+            if (received[parsed.denom]) {
+              received[parsed.denom].amount += parsed.amount;
+            } else {
+              received[parsed.denom] = { ...parsed };
+            }
+          }
         }
       }
     }
@@ -418,26 +342,12 @@ function extractCoinMovements(tx, walletAddress) {
         const coins = amount.split(',');
         for (const c of coins) {
           const parsed = parseCoinFromString(c.trim());
-          if (parsed) movements.spent.push(parsed);
-        }
-      }
-    }
-
-    // Injective-specific transfer events
-    if (event.type === 'transfer') {
-      const recipient = getAttr('recipient')?.toLowerCase();
-      const sender = getAttr('sender')?.toLowerCase();
-      const amount = getAttr('amount');
-      if (amount) {
-        const coins = amount.split(',');
-        for (const c of coins) {
-          const parsed = parseCoinFromString(c.trim());
           if (parsed) {
-            if (recipient?.includes(walletLower.slice(0, 10))) {
-              movements.received.push(parsed);
-            }
-            if (sender?.includes(walletLower.slice(0, 10))) {
-              movements.spent.push(parsed);
+            // Aggregate by denom
+            if (spent[parsed.denom]) {
+              spent[parsed.denom].amount += parsed.amount;
+            } else {
+              spent[parsed.denom] = { ...parsed };
             }
           }
         }
@@ -445,7 +355,35 @@ function extractCoinMovements(tx, walletAddress) {
     }
   }
 
-  return movements;
+  // Convert to arrays
+  return {
+    received: Object.values(received),
+    spent: Object.values(spent)
+  };
+}
+
+// Helper: Get human-readable note for a transaction
+function getTransactionNote(tx) {
+  const messages = tx.messages || tx.data?.messages || tx.tx?.body?.messages || [];
+  const msg = messages[0];
+  if (!msg) return 'Transaction';
+
+  const type = msg['@type'] || msg.type || '';
+  const typeShort = type.split('.').pop().replace('Msg', '');
+
+  // For contract executions, extract the action name
+  if (typeShort === 'ExecuteContract' || typeShort === 'ExecuteContractCompat') {
+    try {
+      const msgData = typeof msg.msg === 'string' ? JSON.parse(msg.msg) : msg.msg;
+      if (msgData) {
+        const action = Object.keys(msgData)[0] || 'execute';
+        return action;
+      }
+    } catch { /* ignore */ }
+    return 'contract';
+  }
+
+  return typeShort || 'Transaction';
 }
 
 function parseTransaction(tx, walletAddress, includeFailedForGas = false) {
@@ -461,6 +399,10 @@ function parseTransaction(tx, walletAddress, includeFailedForGas = false) {
 
   if (isNaN(date.getTime())) return []; // Invalid date
 
+  // Awaken Tax date format: MM/DD/YYYY HH:MM:SS in UTC
+  const dateFormatted = `${String(date.getUTCMonth() + 1).padStart(2, '0')}/${String(date.getUTCDate()).padStart(2, '0')}/${date.getUTCFullYear()} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}:${String(date.getUTCSeconds()).padStart(2, '0')}`;
+
+  // Internal date for sorting/filtering
   const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   const dateDisplay = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   const timeDisplay = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
@@ -468,1188 +410,273 @@ function parseTransaction(tx, walletAddress, includeFailedForGas = false) {
 
   // Parse fee
   const feeData = tx.gasFee?.amount?.[0] || tx.gas_fee?.amount?.[0] || tx.fee?.amount?.[0];
-  const feeAmount = feeData ? formatAmount(feeData.amount, feeData.denom) : '';
-  const feeCurrency = feeData ? getTokenInfo(feeData.denom).symbol : '';
   const feeRaw = feeData ? parseFloat(feeData.amount) / Math.pow(10, getTokenInfo(feeData.denom).decimals) : 0;
+  const feeAmount = feeRaw > 0 ? feeRaw.toFixed(8).replace(/\.?0+$/, '') : '';
+  const feeCurrency = feeData ? getTokenInfo(feeData.denom).symbol : '';
 
-  // Extract coin movements from events (for trades)
+  // Extract coin movements from events (deduplicated)
   const movements = extractCoinMovements(tx, walletAddress);
 
-  const messages = tx.messages || tx.data?.messages || tx.tx?.body?.messages || [];
+  // Get transaction note from message type/action
+  const txNote = getTransactionNote(tx);
 
+  // Base transaction object for Awaken Tax format
   const baseTx = {
     dateStr,
+    dateFormatted,
     dateDisplay,
     timeDisplay,
     txHash,
-    feeAmount,
-    feeCurrency,
+    feeAmount: '',
+    feeCurrency: '',
     feeRaw,
+    // Awaken format: separate sent/received columns (no negative numbers!)
+    receivedQty: '',
+    receivedCurrency: '',
+    receivedFiat: '',
+    sentQty: '',
+    sentCurrency: '',
+    sentFiat: '',
+    notes: txNote,
+    tag: '',
+    isFailed: isFailed,
+    // For UI display (legacy)
     asset: '',
     amount: '',
     pnl: '',
     pnlDisplay: '',
-    notes: '',
-    tag: '',
-    isFailed: isFailed,
   };
 
-  // For failed transactions, just return a gas fee entry
+  // For failed transactions, just record the gas fee as a fee
   if (isFailed) {
-    const msgType = messages[0]?.['@type']?.split('.').pop() || messages[0]?.type?.split('.').pop() || 'Transaction';
-    return [{
-      ...baseTx,
-      asset: feeCurrency || 'INJ',
-      amount: feeAmount ? `-${feeAmount}` : '',
-      tag: 'failed',
-      notes: `Failed: ${msgType.replace('Msg', '')}`,
-    }];
+    if (feeRaw > 0) {
+      return [{
+        ...baseTx,
+        sentQty: feeAmount,
+        sentCurrency: feeCurrency || 'INJ',
+        feeAmount,
+        feeCurrency: feeCurrency || 'INJ',
+        tag: 'fee',
+        notes: `Failed: ${txNote}`,
+        // Legacy UI fields
+        asset: feeCurrency || 'INJ',
+        amount: `-${feeAmount}`,
+      }];
+    }
+    return [];
   }
 
-  for (const msg of messages) {
-    const type = msg['@type'] || msg.type || '';
-    const value = msg.value || msg;
-    const typeShort = type.split('.').pop() || type;
+  // Determine transaction type based on message type and token flows
+  const hasSpent = movements.spent.length > 0;
+  const hasReceived = movements.received.length > 0;
 
-    // ========== BANK MODULE ==========
-    if (typeShort === 'MsgSend') {
-      const from = value.from_address || value.fromAddress || '';
-      const to = value.to_address || value.toAddress || '';
-      const amounts = value.amount || [];
+  // Try to classify based on message type
+  const messages = tx.messages || tx.data?.messages || tx.tx?.body?.messages || [];
+  const msgType = messages[0]?.['@type']?.split('.').pop() || messages[0]?.type?.split('.').pop() || '';
 
-      for (const coin of amounts) {
-        const { symbol } = getTokenInfo(coin.denom);
-        const qty = formatAmount(coin.amount, coin.denom);
+  // Classify the transaction - returns Awaken Tax compatible tag
+  const classifyTransaction = () => {
+    const typeLower = msgType.toLowerCase();
+    const noteLower = txNote.toLowerCase();
 
-        if (from.toLowerCase() === walletAddress.toLowerCase()) {
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: `-${qty}`,
-            tag: 'transfer',
-            notes: `Send to ${to}`,
-          });
-        } else if (to.toLowerCase() === walletAddress.toLowerCase()) {
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: qty,
-            feeAmount: '', // Receiver doesn't pay fee
-            feeCurrency: '',
-            tag: 'transfer',
-            notes: `Receive from ${from}`,
-          });
-        }
+    // Staking operations
+    if (typeLower.includes('delegate') && !typeLower.includes('undelegate')) {
+      return 'Staking Deposit';
+    }
+    if (typeLower.includes('undelegate')) {
+      return 'Staking Return';
+    }
+    if (typeLower.includes('withdrawdelegatorreward') || typeLower.includes('withdrawvalidatorcommission')) {
+      return 'Staking Claim';
+    }
+
+    // IBC / Bridge
+    if (typeLower.includes('transfer') && typeLower.includes('ibc')) {
+      return hasSpent ? 'Transfer Out' : 'Transfer In';
+    }
+    if (typeLower.includes('sendtoeth') || typeLower.includes('bridge')) {
+      return 'Transfer Out';
+    }
+
+    // Governance
+    if (typeLower.includes('vote') || typeLower.includes('proposal')) {
+      return ''; // Just a fee transaction
+    }
+
+    // Contract execution - try to identify swap/LP actions
+    if (typeLower.includes('executecontract')) {
+      if (noteLower.includes('swap') || noteLower.includes('execute_swap')) {
+        return 'swap';
+      }
+      if (noteLower.includes('provide_liquidity') || noteLower.includes('add_liquidity')) {
+        return 'Add Liquidity';
+      }
+      if (noteLower.includes('withdraw_liquidity') || noteLower.includes('remove_liquidity')) {
+        return 'Remove Liquidity';
+      }
+      if (noteLower.includes('claim') || noteLower.includes('harvest')) {
+        return 'Reward';
+      }
+      if (noteLower.includes('stake') || noteLower.includes('bond')) {
+        return 'Staking Deposit';
+      }
+      if (noteLower.includes('unstake') || noteLower.includes('unbond')) {
+        return 'Staking Return';
+      }
+      // Contract with both in/out is likely a swap
+      if (hasSpent && hasReceived) {
+        return 'swap';
       }
     }
 
-    else if (typeShort === 'MsgMultiSend') {
-      for (const input of (value.inputs || [])) {
-        if (input.address?.toLowerCase() === walletAddress.toLowerCase()) {
-          for (const coin of (input.coins || [])) {
-            const { symbol } = getTokenInfo(coin.denom);
-            results.push({
-              ...baseTx,
-              asset: symbol,
-              amount: `-${formatAmount(coin.amount, coin.denom)}`,
-              tag: 'transfer',
-              notes: 'MultiSend out',
-            });
-          }
-        }
-      }
-      for (const output of (value.outputs || [])) {
-        if (output.address?.toLowerCase() === walletAddress.toLowerCase()) {
-          for (const coin of (output.coins || [])) {
-            const { symbol } = getTokenInfo(coin.denom);
-            results.push({
-              ...baseTx,
-              asset: symbol,
-              amount: formatAmount(coin.amount, coin.denom),
-              feeAmount: '',
-              feeCurrency: '',
-              tag: 'transfer',
-              notes: 'MultiSend in',
-            });
-          }
-        }
-      }
+    // Simple transfers
+    if (typeLower === 'msgsend' || typeLower.includes('send')) {
+      return hasSpent ? 'Transfer Out' : 'Transfer In';
     }
 
-    // ========== STAKING MODULE ==========
-    else if (typeShort === 'MsgDelegate') {
-      const amt = value.amount;
-      if (amt) {
-        const { symbol } = getTokenInfo(amt.denom);
-        results.push({
-          ...baseTx,
-          asset: symbol,
-          amount: `-${formatAmount(amt.amount, amt.denom)}`,
-          tag: 'stake',
-          notes: `Delegate to ${truncateValidator(value.validator_address || value.validatorAddress)}`,
-        });
-      }
+    // Exchange operations
+    if (typeLower.includes('spotmarket') || typeLower.includes('spotlimit')) {
+      return 'swap';
+    }
+    if (typeLower.includes('derivative') || typeLower.includes('perpetual')) {
+      if (typeLower.includes('create')) return 'Open Position';
+      if (typeLower.includes('cancel')) return 'Close Position';
+      return 'swap';
     }
 
-    else if (typeShort === 'MsgUndelegate') {
-      const amt = value.amount;
-      if (amt) {
-        const { symbol } = getTokenInfo(amt.denom);
-        results.push({
-          ...baseTx,
-          asset: symbol,
-          amount: formatAmount(amt.amount, amt.denom),
-          tag: 'unstake',
-          notes: `Undelegate from ${truncateValidator(value.validator_address || value.validatorAddress)}`,
-        });
-      }
+    // Auction
+    if (typeLower.includes('bid') || typeLower.includes('auction')) {
+      return 'swap';
     }
 
-    else if (typeShort === 'MsgBeginRedelegate') {
-      const amt = value.amount;
-      if (amt) {
-        const { symbol } = getTokenInfo(amt.denom);
-        results.push({
-          ...baseTx,
-          asset: symbol,
-          amount: '0',
-          tag: 'stake',
-          notes: `Redelegate ${truncateValidator(value.validator_src_address)} → ${truncateValidator(value.validator_dst_address)}`,
-        });
-      }
+    // If has both in and out, likely a swap
+    if (hasSpent && hasReceived) {
+      return 'swap';
     }
 
-    else if (typeShort === 'MsgCancelUnbondingDelegation') {
-      const amt = value.amount;
-      if (amt) {
-        const { symbol } = getTokenInfo(amt.denom);
-        results.push({
-          ...baseTx,
-          asset: symbol,
-          amount: `-${formatAmount(amt.amount, amt.denom)}`,
-          tag: 'stake',
-          notes: `Cancel unbonding from ${truncateValidator(value.validator_address)}`,
-        });
-      }
-    }
+    // Default based on flow direction
+    if (hasSpent && !hasReceived) return 'Transfer Out';
+    if (hasReceived && !hasSpent) return 'Transfer In';
 
-    // ========== DISTRIBUTION MODULE ==========
-    else if (typeShort === 'MsgWithdrawDelegatorReward') {
-      // Extract reward amount from events
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'reward',
-            notes: `Claim staking rewards from ${truncateValidator(value.validator_address || value.validatorAddress)}`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          asset: 'INJ',
-          amount: '',
-          tag: 'reward',
-          notes: `Claim staking rewards from ${truncateValidator(value.validator_address || value.validatorAddress)}`,
-        });
-      }
-    }
+    return ''; // Unknown - will show as empty tag
+  };
 
-    else if (typeShort === 'MsgWithdrawValidatorCommission') {
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'reward',
-            notes: 'Withdraw validator commission',
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          asset: 'INJ',
-          amount: '',
-          tag: 'reward',
-          notes: 'Withdraw validator commission',
-        });
-      }
-    }
+  const txTag = classifyTransaction();
 
-    else if (typeShort === 'MsgSetWithdrawAddress') {
+  // SWAP/TRADE: Both sent and received tokens
+  if (hasSpent && hasReceived) {
+    if (movements.spent.length === 1 && movements.received.length === 1) {
+      // Clean swap: one token for another - single row
+      const sent = movements.spent[0];
+      const recv = movements.received[0];
       results.push({
         ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: '',
-        notes: `Set withdraw address to ${truncateAddress(value.withdraw_address)}`,
+        sentQty: sent.amount.toFixed(8).replace(/\.?0+$/, ''),
+        sentCurrency: sent.symbol,
+        receivedQty: recv.amount.toFixed(8).replace(/\.?0+$/, ''),
+        receivedCurrency: recv.symbol,
+        feeAmount,
+        feeCurrency,
+        tag: txTag,
+        notes: txNote,
+        asset: `${sent.symbol}→${recv.symbol}`,
+        amount: recv.amount.toFixed(6).replace(/\.?0+$/, ''),
       });
-    }
-
-    // ========== IBC MODULE ==========
-    else if (typeShort === 'MsgTransfer') {
-      const token = value.token;
-      if (token) {
-        const { symbol } = getTokenInfo(token.denom);
-        const qty = formatAmount(token.amount, token.denom);
-        const isSender = value.sender?.toLowerCase() === walletAddress.toLowerCase();
-
-        results.push({
-          ...baseTx,
-          asset: symbol,
-          amount: isSender ? `-${qty}` : qty,
-          feeAmount: isSender ? feeAmount : '',
-          feeCurrency: isSender ? feeCurrency : '',
-          tag: 'transfer',
-          notes: isSender
-            ? `IBC transfer to ${truncateAddress(value.receiver)} via ${value.source_channel || 'channel'}`
-            : `IBC receive from ${truncateAddress(value.sender)}`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgRecvPacket' || typeShort === 'MsgAcknowledgement' || typeShort === 'MsgTimeout') {
-      // IBC relayer messages - check if user received tokens
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'transfer',
-            notes: `IBC ${typeShort.replace('Msg', '')} (received)`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          asset: feeCurrency || 'INJ',
-          amount: feeAmount ? `-${feeAmount}` : '0',
-          tag: '',
-          notes: `IBC ${typeShort.replace('Msg', '')}`,
-        });
-      }
-    }
-
-    // ========== EXCHANGE MODULE (Injective-specific) ==========
-    else if (typeShort === 'MsgDeposit' && !value.proposal_id) {
-      // Exchange deposit (not governance deposit)
-      if (movements.spent.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'transfer',
-            notes: 'Deposit to trading account',
-          });
-        }
-      } else {
-        const amt = value.amount;
-        if (amt) {
-          const { symbol } = getTokenInfo(amt.denom);
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: `-${formatAmount(amt.amount, amt.denom)}`,
-            tag: 'transfer',
-            notes: 'Deposit to trading account',
-          });
-        }
-      }
-    }
-
-    else if (typeShort === 'MsgWithdraw') {
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'transfer',
-            notes: 'Withdraw from trading account',
-          });
-        }
-      } else {
-        const amt = value.amount;
-        if (amt) {
-          const { symbol } = getTokenInfo(amt.denom);
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: formatAmount(amt.amount, amt.denom),
-            tag: 'transfer',
-            notes: 'Withdraw from trading account',
-          });
-        }
-      }
-    }
-
-    else if (typeShort === 'MsgCreateSpotLimitOrder' || typeShort === 'MsgCreateSpotMarketOrder') {
-      const order = value.order || value;
-      const orderType = typeShort.includes('Limit') ? 'limit' : 'market';
-
-      // Extract trade amounts from events
-      // For spot orders: we spend one token and receive another
-      if (movements.received.length > 0 || movements.spent.length > 0) {
-        // Create entries for each side of the trade
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'swap',
-            notes: `Spot ${orderType} sell`,
-          });
-        }
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            feeAmount: '', // Don't double-count fee
-            feeCurrency: '',
-            tag: 'swap',
-            notes: `Spot ${orderType} buy`,
-          });
-        }
-      } else {
-        // Fallback if no events - order placed but may not have filled yet
-        // This is NOT a taxable event - just a pending order
-        results.push({
-          ...baseTx,
-          asset: feeCurrency || 'INJ',
-          amount: feeAmount ? `-${feeAmount}` : '0',
-          tag: 'order_placed',
-          notes: `Spot ${orderType} order placed (pending)`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgCancelSpotOrder') {
-      // Check if there were any refunds from the cancellation
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'refund',
-            notes: `Cancel spot order (refund)`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          tag: '',
-          notes: `Cancel spot order`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgBatchCancelSpotOrders') {
-      const count = value.data?.length || 'multiple';
-      // Check for refunds
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'refund',
-            notes: `Cancel ${count} spot orders (refund)`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          tag: '',
-          notes: `Cancel ${count} spot orders`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgCreateDerivativeLimitOrder' || typeShort === 'MsgCreateDerivativeMarketOrder') {
-      const order = value.order || value;
-      const orderType = typeShort.includes('Limit') ? 'limit' : 'market';
-      const margin = order.margin;
-
-      // For derivatives, track margin movements
-      if (movements.spent.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'open_position',
-            notes: `Derivative ${orderType} (margin)`,
-          });
-        }
-      } else if (margin) {
-        // Use margin from message if events not available
-        const marginAmt = parseFloat(margin) / 1e18; // Assuming 18 decimals
-        if (marginAmt > 0) {
-          results.push({
-            ...baseTx,
-            asset: 'USDT',
-            amount: `-${marginAmt.toFixed(2)}`,
-            tag: 'open_position',
-            notes: `Derivative ${orderType} order`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          asset: 'USDT',
-          tag: 'open_position',
-          notes: `Derivative ${orderType} order`,
-        });
-      }
-
-      // Check for any received amounts (realized PnL, funding, etc.)
-      for (const coin of movements.received) {
-        results.push({
-          ...baseTx,
-          asset: coin.symbol,
-          amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-          feeAmount: '',
-          feeCurrency: '',
-          tag: 'close_position',
-          notes: `Derivative settlement`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgCancelDerivativeOrder') {
-      // Check for margin refunds
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'refund',
-            notes: `Cancel derivative order (refund)`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          tag: 'close_position',
-          notes: `Cancel derivative order`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgBatchCancelDerivativeOrders') {
-      const count = value.data?.length || 'multiple';
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'refund',
-            notes: `Cancel ${count} derivative orders (refund)`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          tag: 'close_position',
-          notes: `Cancel ${count} derivative orders`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgBatchUpdateOrders') {
-      const spotCreates = value.spot_orders_to_create?.length || 0;
-      const spotCancels = value.spot_orders_to_cancel?.length || 0;
-      const derivCreates = value.derivative_orders_to_create?.length || 0;
-      const derivCancels = value.derivative_orders_to_cancel?.length || 0;
-
-      // Extract actual movements from batch
-      if (movements.spent.length > 0 || movements.received.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'swap',
-            notes: `Batch order sell`,
-          });
-        }
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            feeAmount: '',
-            feeCurrency: '',
-            tag: 'swap',
-            notes: `Batch order buy`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          tag: 'swap',
-          notes: `Batch: +${spotCreates + derivCreates} -${spotCancels + derivCancels} orders`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgLiquidatePosition') {
-      // Extract any received amounts from liquidation
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'close_position',
-            notes: `Position liquidated (remaining margin)`,
-          });
-        }
-      } else if (movements.spent.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'close_position',
-            notes: `Position liquidated (loss)`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          tag: 'close_position',
-          notes: `Position liquidated`,
-        });
-      }
-    }
-
-    // Try to extract realized PnL from position settlements
-    else if (typeShort === 'MsgExternalTransfer' || typeShort === 'MsgSubaccountTransfer') {
-      const amt = value.amount;
-      if (amt) {
-        const { symbol } = getTokenInfo(amt.denom);
-        const qty = formatAmount(amt.amount, amt.denom);
-        // Positive transfers to main account from subaccount could be realized profits
-        results.push({
-          ...baseTx,
-          asset: symbol,
-          amount: qty,
-          tag: 'transfer',
-          notes: 'Subaccount transfer',
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgIncreasePositionMargin') {
-      // Check movements first
-      if (movements.spent.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'open_position',
-            notes: `Add margin`,
-          });
-        }
-      } else {
-        const amt = value.amount;
-        results.push({
-          ...baseTx,
-          asset: 'USDT',
-          amount: amt ? `-${formatAmount(amt, 'peggy0xdac17f958d2ee523a2206206994597c13d831ec7')}` : '',
-          tag: 'open_position',
-          notes: `Add margin`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgDecreasePositionMargin') {
-      // Check movements first
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'close_position',
-            notes: `Remove margin`,
-          });
-        }
-      } else {
-        const amt = value.amount;
-        results.push({
-          ...baseTx,
-          asset: 'USDT',
-          amount: amt ? formatAmount(amt, 'peggy0xdac17f958d2ee523a2206206994597c13d831ec7') : '',
-          tag: 'close_position',
-          notes: `Remove margin`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgInstantSpotMarketLaunch' || typeShort === 'MsgInstantPerpetualMarketLaunch') {
-      results.push({
-        ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: '',
-        notes: `Launch market ${value.ticker || ''}`,
-      });
-    }
-
-    // ========== AUCTION MODULE ==========
-    else if (typeShort === 'MsgBid') {
-      // Record spent bid amount
-      if (movements.spent.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'swap',
-            notes: `Auction bid round ${value.round || ''}`,
-          });
-        }
-      } else {
-        const amt = value.bid_amount || value.amount;
-        if (amt) {
-          const { symbol } = getTokenInfo(amt.denom);
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: `-${formatAmount(amt.amount, amt.denom)}`,
-            tag: 'swap',
-            notes: `Auction bid round ${value.round || ''}`,
-          });
-        }
-      }
-      // Record any received tokens from winning auction
-      for (const coin of movements.received) {
-        results.push({
-          ...baseTx,
-          asset: coin.symbol,
-          amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-          feeAmount: '',
-          feeCurrency: '',
-          tag: 'swap',
-          notes: `Auction win round ${value.round || ''}`,
-        });
-      }
-    }
-
-    // ========== INSURANCE MODULE ==========
-    else if (typeShort === 'MsgUnderwrite') {
-      if (movements.spent.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'stake',
-            notes: 'Insurance fund underwrite',
-          });
-        }
-      } else {
-        const amt = value.deposit || value.amount;
-        if (amt) {
-          const { symbol } = getTokenInfo(amt.denom);
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: `-${formatAmount(amt.amount, amt.denom)}`,
-            tag: 'stake',
-            notes: 'Insurance fund underwrite',
-          });
-        }
-      }
-    }
-
-    else if (typeShort === 'MsgRequestRedemption') {
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'unstake',
-            notes: 'Insurance fund redemption',
-          });
-        }
-      } else {
-        const amt = value.amount;
-        if (amt) {
-          const { symbol } = getTokenInfo(amt.denom);
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: formatAmount(amt.amount, amt.denom),
-            tag: 'unstake',
-            notes: 'Insurance fund redemption',
-          });
-        }
-      }
-    }
-
-    // ========== PEGGY (Bridge) MODULE ==========
-    else if (typeShort === 'MsgSendToEth') {
-      if (movements.spent.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'bridge_out',
-            notes: `Bridge to Ethereum ${truncateAddress(value.eth_dest)}`,
-          });
-        }
-      } else {
-        const amt = value.amount;
-        if (amt) {
-          const { symbol } = getTokenInfo(amt.denom);
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: `-${formatAmount(amt.amount, amt.denom)}`,
-            tag: 'bridge_out',
-            notes: `Bridge to Ethereum ${truncateAddress(value.eth_dest)}`,
-          });
-        }
-      }
-    }
-
-    else if (typeShort === 'MsgDepositClaim') {
-      // Bridge deposit from Ethereum - check for received tokens
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'bridge_in',
-            notes: `Bridge from Ethereum`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          tag: 'bridge_in',
-          notes: `Bridge deposit claim`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgConfirmBatch' || typeShort === 'MsgValsetConfirm') {
-      results.push({
-        ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: '',
-        notes: `Peggy ${typeShort.replace('Msg', '')}`,
-      });
-    }
-
-    // ========== WASM MODULE ==========
-    else if (typeShort === 'MsgExecuteContract' || typeShort === 'MsgExecuteContractCompat') {
-      const contract = value.contract || value.contractAddress || '';
-      let action = 'execute';
-
-      try {
-        const msgData = typeof value.msg === 'string' ? JSON.parse(value.msg) : value.msg;
-        if (msgData) {
-          action = Object.keys(msgData)[0] || 'execute';
-        }
-      } catch (e) { /* ignore */ }
-
-      // Check if this looks like a swap (has both spent and received)
-      const isSwapLike = movements.spent.length > 0 && movements.received.length > 0;
-      const swapActions = ['swap', 'execute_swap_operations', 'swap_exact_for', 'swap_for_exact', 'provide_liquidity', 'withdraw_liquidity'];
-      const isSwapAction = swapActions.some(s => action.toLowerCase().includes(s));
-
-      if (isSwapLike || isSwapAction) {
-        // This is a swap - record both sides
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'swap',
-            notes: `${action} (sell)`,
-          });
-        }
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            feeAmount: '',
-            feeCurrency: '',
-            tag: 'swap',
-            notes: `${action} (buy)`,
-          });
-        }
-      } else if (movements.spent.length > 0 || movements.received.length > 0) {
-        // Has movements but not a swap - record each movement
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'contract_interaction',
-            notes: `${action}`,
-          });
-        }
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            feeAmount: '',
-            feeCurrency: '',
-            tag: 'contract_interaction',
-            notes: `${action}`,
-          });
-        }
-      } else {
-        // Fallback to funds from message
-        const funds = Array.isArray(value.funds) ? value.funds : [];
-        if (funds.length > 0 && funds[0]) {
-          const { symbol } = getTokenInfo(funds[0].denom);
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: `-${formatAmount(funds[0].amount, funds[0].denom)}`,
-            tag: 'contract_interaction',
-            notes: `${action}`,
-          });
-        } else {
-          // No movements or funds - still record with gas fee as the cost
-          results.push({
-            ...baseTx,
-            asset: feeCurrency || 'INJ',
-            amount: feeAmount ? `-${feeAmount}` : '0',
-            tag: 'contract_interaction',
-            notes: `${action}`,
-          });
-        }
-      }
-    }
-
-    else if (typeShort === 'MsgInstantiateContract' || typeShort === 'MsgInstantiateContract2') {
-      results.push({
-        ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: 'contract_interaction',
-        notes: `Instantiate contract (code ${value.code_id || ''})`,
-      });
-    }
-
-    else if (typeShort === 'MsgMigrateContract') {
-      results.push({
-        ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: 'contract_interaction',
-        notes: `Migrate contract ${truncateAddress(value.contract)}`,
-      });
-    }
-
-    else if (typeShort === 'MsgStoreCode') {
-      results.push({
-        ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: 'contract_interaction',
-        notes: 'Store contract code',
-      });
-    }
-
-    // ========== GOVERNANCE MODULE ==========
-    else if (typeShort === 'MsgVote') {
-      const optionMap = { 1: 'Yes', 2: 'Abstain', 3: 'No', 4: 'NoWithVeto' };
-      const option = optionMap[value.option] || value.option || '';
-      results.push({
-        ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: '',
-        notes: `Vote ${option} on proposal #${value.proposal_id || value.proposalId || ''}`,
-      });
-    }
-
-    else if (typeShort === 'MsgVoteWeighted') {
-      results.push({
-        ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: '',
-        notes: `Weighted vote on proposal #${value.proposal_id || value.proposalId || ''}`,
-      });
-    }
-
-    else if (typeShort === 'MsgDeposit' && value.proposal_id) {
-      const amounts = value.amount || [];
-      if (amounts.length > 0) {
-        for (const coin of amounts) {
-          const { symbol } = getTokenInfo(coin.denom);
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: `-${formatAmount(coin.amount, coin.denom)}`,
-            tag: '',
-            notes: `Deposit to proposal #${value.proposal_id}`,
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          asset: feeCurrency || 'INJ',
-          amount: feeAmount ? `-${feeAmount}` : '0',
-          tag: '',
-          notes: `Deposit to proposal #${value.proposal_id}`,
-        });
-      }
-    }
-
-    else if (typeShort === 'MsgSubmitProposal') {
-      const deposit = value.initial_deposit?.[0];
-      if (deposit) {
-        const { symbol } = getTokenInfo(deposit.denom);
-        results.push({
-          ...baseTx,
-          asset: symbol,
-          amount: `-${formatAmount(deposit.amount, deposit.denom)}`,
-          tag: '',
-          notes: 'Submit governance proposal',
-        });
-      } else {
-        results.push({
-          ...baseTx,
-          asset: feeCurrency || 'INJ',
-          amount: feeAmount ? `-${feeAmount}` : '0',
-          tag: '',
-          notes: 'Submit governance proposal',
-        });
-      }
-    }
-
-    // ========== AUTHZ MODULE ==========
-    else if (typeShort === 'MsgGrant') {
-      results.push({
-        ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: '',
-        notes: `Grant authorization to ${truncateAddress(value.grantee)}`,
-      });
-    }
-
-    else if (typeShort === 'MsgRevoke') {
-      results.push({
-        ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: '',
-        notes: `Revoke authorization from ${truncateAddress(value.grantee)}`,
-      });
-    }
-
-    else if (typeShort === 'MsgExec') {
-      // Authz execution - extract actual movements
-      if (movements.spent.length > 0 || movements.received.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: 'transfer',
-            notes: 'Authz execute (out)',
-          });
-        }
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            feeAmount: '',
-            feeCurrency: '',
-            tag: 'transfer',
-            notes: 'Authz execute (in)',
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          asset: feeCurrency || 'INJ',
-          amount: feeAmount ? `-${feeAmount}` : '0',
-          tag: '',
-          notes: 'Execute authorized message',
-        });
-      }
-    }
-
-    // ========== TOKEN FACTORY MODULE ==========
-    else if (typeShort === 'MsgCreateDenom') {
-      results.push({
-        ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: '',
-        notes: `Create token ${value.subdenom || ''}`,
-      });
-    }
-
-    else if (typeShort === 'MsgMint') {
-      if (movements.received.length > 0) {
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            tag: 'reward',
-            notes: 'Mint tokens',
-          });
-        }
-      } else {
-        const amt = value.amount;
-        if (amt) {
-          const { symbol } = getTokenInfo(amt.denom);
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: formatAmount(amt.amount, amt.denom),
-            tag: 'reward',
-            notes: 'Mint tokens',
-          });
-        } else {
-          results.push({
-            ...baseTx,
-            asset: feeCurrency || 'INJ',
-            amount: feeAmount ? `-${feeAmount}` : '0',
-            tag: 'reward',
-            notes: 'Mint tokens',
-          });
-        }
-      }
-    }
-
-    else if (typeShort === 'MsgBurn') {
-      if (movements.spent.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: '',
-            notes: 'Burn tokens',
-          });
-        }
-      } else {
-        const amt = value.amount;
-        if (amt) {
-          const { symbol } = getTokenInfo(amt.denom);
-          results.push({
-            ...baseTx,
-            asset: symbol,
-            amount: `-${formatAmount(amt.amount, amt.denom)}`,
-            tag: '',
-            notes: 'Burn tokens',
-          });
-        } else {
-          results.push({
-            ...baseTx,
-            asset: feeCurrency || 'INJ',
-            amount: feeAmount ? `-${feeAmount}` : '0',
-            tag: '',
-            notes: 'Burn tokens',
-          });
-        }
-      }
-    }
-
-    // ========== FALLBACK ==========
-    else if (typeShort.startsWith('Msg')) {
-      // Check for any token movements in unknown message types
-      if (movements.spent.length > 0 || movements.received.length > 0) {
-        for (const coin of movements.spent) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-            tag: '',
-            notes: typeShort.replace('Msg', ''),
-          });
-        }
-        for (const coin of movements.received) {
-          results.push({
-            ...baseTx,
-            asset: coin.symbol,
-            amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-            feeAmount: '',
-            feeCurrency: '',
-            tag: '',
-            notes: typeShort.replace('Msg', ''),
-          });
-        }
-      } else {
-        results.push({
-          ...baseTx,
-          asset: feeCurrency || 'INJ',
-          amount: feeAmount ? `-${feeAmount}` : '0',
-          tag: '',
-          notes: typeShort.replace('Msg', ''),
-        });
-      }
-    }
-  }
-
-  // If no messages were parsed but tx exists, check for movements
-  if (results.length === 0 && messages.length > 0) {
-    if (movements.spent.length > 0 || movements.received.length > 0) {
-      for (const coin of movements.spent) {
-        results.push({
-          ...baseTx,
-          asset: coin.symbol,
-          amount: `-${coin.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-          tag: '',
-          notes: 'Transaction',
-        });
-      }
-      for (const coin of movements.received) {
-        results.push({
-          ...baseTx,
-          asset: coin.symbol,
-          amount: coin.amount.toFixed(6).replace(/\.?0+$/, ''),
-          feeAmount: '',
-          feeCurrency: '',
-          tag: '',
-          notes: 'Transaction',
-        });
-      }
     } else {
+      // Multiple tokens: create rows for each movement
+      for (const sent of movements.spent) {
+        results.push({
+          ...baseTx,
+          sentQty: sent.amount.toFixed(8).replace(/\.?0+$/, ''),
+          sentCurrency: sent.symbol,
+          feeAmount: results.length === 0 ? feeAmount : '',
+          feeCurrency: results.length === 0 ? feeCurrency : '',
+          tag: txTag,
+          notes: txNote,
+          asset: sent.symbol,
+          amount: `-${sent.amount.toFixed(6).replace(/\.?0+$/, '')}`,
+        });
+      }
+      for (const recv of movements.received) {
+        results.push({
+          ...baseTx,
+          receivedQty: recv.amount.toFixed(8).replace(/\.?0+$/, ''),
+          receivedCurrency: recv.symbol,
+          tag: txTag,
+          notes: txNote,
+          asset: recv.symbol,
+          amount: recv.amount.toFixed(6).replace(/\.?0+$/, ''),
+        });
+      }
+    }
+  }
+  // SENT ONLY
+  else if (hasSpent && !hasReceived) {
+    for (const sent of movements.spent) {
       results.push({
         ...baseTx,
-        asset: feeCurrency || 'INJ',
-        amount: feeAmount ? `-${feeAmount}` : '0',
-        tag: '',
-        notes: 'Transaction',
+        sentQty: sent.amount.toFixed(8).replace(/\.?0+$/, ''),
+        sentCurrency: sent.symbol,
+        feeAmount: results.length === 0 ? feeAmount : '',
+        feeCurrency: results.length === 0 ? feeCurrency : '',
+        tag: txTag,
+        notes: txNote,
+        asset: sent.symbol,
+        amount: `-${sent.amount.toFixed(6).replace(/\.?0+$/, '')}`,
       });
     }
+  }
+  // RECEIVED ONLY
+  else if (hasReceived && !hasSpent) {
+    for (const recv of movements.received) {
+      results.push({
+        ...baseTx,
+        receivedQty: recv.amount.toFixed(8).replace(/\.?0+$/, ''),
+        receivedCurrency: recv.symbol,
+        tag: txTag,
+        notes: txNote,
+        asset: recv.symbol,
+        amount: recv.amount.toFixed(6).replace(/\.?0+$/, ''),
+      });
+    }
+  }
+
+  // Add gas fee as separate row if not already in spent tokens
+  if (feeRaw > 0 && results.length > 0) {
+    const feeInSent = movements.spent.some(s => s.symbol === feeCurrency);
+    if (!feeInSent) {
+      results.push({
+        ...baseTx,
+        sentQty: feeAmount,
+        sentCurrency: feeCurrency,
+        feeAmount,
+        feeCurrency,
+        tag: 'fee',
+        notes: 'Transaction fee',
+        asset: feeCurrency,
+        amount: `-${feeAmount}`,
+      });
+    }
+  }
+
+  // If no movements at all, just record the gas fee
+  if (results.length === 0 && feeRaw > 0) {
+    results.push({
+      ...baseTx,
+      sentQty: feeAmount,
+      sentCurrency: feeCurrency,
+      feeAmount,
+      feeCurrency,
+      tag: 'fee',
+      notes: txNote || 'Transaction fee',
+      asset: feeCurrency,
+      amount: `-${feeAmount}`,
+    });
   }
 
   return results;
 }
+
 
 // Helper functions - no truncation for CSV accuracy
 function truncateAddress(addr) {
@@ -1666,21 +693,41 @@ function truncateMarketId(id) {
 
 // ============================================================================
 // CSV GENERATION - Awaken Tax format
+// https://help.awaken.tax/en/articles/10422149-how-to-format-your-csv-for-awaken-tax
 // ============================================================================
 function generateCSV(transactions) {
-  const headers = ['Date', 'Asset', 'Amount', 'Fee', 'P&L', 'Payment Token', 'ID', 'Notes', 'Tag', 'Transaction Hash'];
+  // Awaken Tax CSV columns (in order):
+  // Date, Received Quantity, Received Currency, Received Fiat Amount,
+  // Sent Quantity, Sent Currency, Sent Fiat Amount,
+  // Fee Amount, Fee Currency, Transaction Hash, Notes, Tag
+  const headers = [
+    'Date',
+    'Received Quantity',
+    'Received Currency',
+    'Received Fiat Amount',
+    'Sent Quantity',
+    'Sent Currency',
+    'Sent Fiat Amount',
+    'Fee Amount',
+    'Fee Currency',
+    'Transaction Hash',
+    'Notes',
+    'Tag'
+  ];
 
-  const rows = transactions.map((tx, idx) => [
-    tx.dateStr,
-    tx.asset,
-    tx.amount,
-    tx.feeAmount,
-    tx.pnl || '',
-    tx.feeCurrency,
-    `TXN${String(idx + 1).padStart(5, '0')}`,
-    tx.notes,
-    tx.tag,
-    tx.txHash,
+  const rows = transactions.map(tx => [
+    tx.dateFormatted,           // MM/DD/YYYY HH:MM:SS UTC
+    tx.receivedQty || '',       // Positive number only
+    tx.receivedCurrency || '',
+    tx.receivedFiat || '',      // Optional fiat value
+    tx.sentQty || '',           // Positive number only
+    tx.sentCurrency || '',
+    tx.sentFiat || '',          // Optional fiat value
+    tx.feeAmount || '',
+    tx.feeCurrency || '',
+    tx.txHash || '',
+    tx.notes || '',
+    tx.tag || '',
   ]);
 
   const escapeCell = (cell) => {
@@ -1698,24 +745,32 @@ function generateCSV(transactions) {
 }
 
 // ============================================================================
-// TAG CONFIGURATION
+// TAG CONFIGURATION - Awaken Tax compatible labels
+// https://help.awaken.tax/en/articles/10453755-how-do-i-label-my-transactions
 // ============================================================================
 const TAG_CONFIG = {
-  'transfer': { bg: 'rgba(59, 130, 246, 0.12)', color: '#60a5fa', label: 'Transfer' },
-  'stake': { bg: 'rgba(139, 92, 246, 0.12)', color: '#a78bfa', label: 'Stake' },
-  'unstake': { bg: 'rgba(139, 92, 246, 0.12)', color: '#c4b5fd', label: 'Unstake' },
-  'reward': { bg: 'rgba(34, 197, 94, 0.12)', color: '#4ade80', label: 'Reward' },
-  'swap': { bg: 'rgba(234, 179, 8, 0.12)', color: '#fbbf24', label: 'Trade' },
-  'open_position': { bg: 'rgba(34, 197, 94, 0.12)', color: '#4ade80', label: 'Open Position' },
-  'close_position': { bg: 'rgba(239, 68, 68, 0.12)', color: '#f87171', label: 'Close Position' },
-  'contract_interaction': { bg: 'rgba(236, 72, 153, 0.12)', color: '#f472b6', label: 'Contract' },
-  'bridge_out': { bg: 'rgba(99, 102, 241, 0.12)', color: '#818cf8', label: 'Bridge' },
-  'bridge_in': { bg: 'rgba(99, 102, 241, 0.12)', color: '#818cf8', label: 'Bridge' },
-  'failed': { bg: 'rgba(239, 68, 68, 0.12)', color: '#ef4444', label: 'Failed' },
-  'gas': { bg: 'rgba(251, 146, 60, 0.12)', color: '#fb923c', label: 'Gas Fee' },
-  'refund': { bg: 'rgba(156, 163, 175, 0.12)', color: '#9ca3af', label: 'Refund' },
-  'order_placed': { bg: 'rgba(251, 191, 36, 0.12)', color: '#fbbf24', label: 'Order' },
-  '': { bg: 'rgba(107, 114, 128, 0.12)', color: '#71717a', label: 'Other' },
+  // Trading
+  'swap': { bg: 'rgba(234, 179, 8, 0.15)', color: '#fbbf24', label: 'Swap' },
+  // Transfers
+  'Transfer In': { bg: 'rgba(34, 197, 94, 0.15)', color: '#4ade80', label: 'Transfer In' },
+  'Transfer Out': { bg: 'rgba(239, 68, 68, 0.15)', color: '#f87171', label: 'Transfer Out' },
+  // Staking
+  'Staking Deposit': { bg: 'rgba(139, 92, 246, 0.15)', color: '#a78bfa', label: 'Staking Deposit' },
+  'Staking Return': { bg: 'rgba(139, 92, 246, 0.15)', color: '#c4b5fd', label: 'Staking Return' },
+  'Staking Claim': { bg: 'rgba(34, 197, 94, 0.15)', color: '#4ade80', label: 'Staking Claim' },
+  // Liquidity
+  'Add Liquidity': { bg: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', label: 'Add Liquidity' },
+  'Remove Liquidity': { bg: 'rgba(59, 130, 246, 0.15)', color: '#93c5fd', label: 'Remove Liquidity' },
+  // Income
+  'Reward': { bg: 'rgba(34, 197, 94, 0.15)', color: '#4ade80', label: 'Reward' },
+  'Airdrop': { bg: 'rgba(236, 72, 153, 0.15)', color: '#f472b6', label: 'Airdrop' },
+  // Derivatives
+  'Open Position': { bg: 'rgba(34, 197, 94, 0.15)', color: '#4ade80', label: 'Open Position' },
+  'Close Position': { bg: 'rgba(239, 68, 68, 0.15)', color: '#f87171', label: 'Close Position' },
+  // Fee
+  'fee': { bg: 'rgba(251, 146, 60, 0.15)', color: '#fb923c', label: 'Fee' },
+  // Unknown/Other
+  '': { bg: 'rgba(107, 114, 128, 0.12)', color: '#71717a', label: 'Unknown' },
 };
 
 // ============================================================================
@@ -2085,24 +1140,21 @@ export default function Home() {
   const [endDate, setEndDate] = useState(() => {
     return new Date().toISOString().split('T')[0];
   });
-  const [calculatePnl, setCalculatePnl] = useState(true);
-  const [includeGasDeductible, setIncludeGasDeductible] = useState(false);
-  // Transaction type filters - all enabled by default
+  // Transaction type filters - Awaken Tax compatible tags
   const [txTypeFilters, setTxTypeFilters] = useState({
-    transfer: true,
     swap: true,
-    stake: true,
-    unstake: true,
-    reward: true,
-    open_position: true,
-    close_position: true,
-    contract_interaction: true,
-    bridge_out: true,
-    bridge_in: true,
-    refund: true,
-    order_placed: true,
-    failed: true,
-    other: true, // For empty tags
+    'Transfer In': true,
+    'Transfer Out': true,
+    'Staking Deposit': true,
+    'Staking Return': true,
+    'Staking Claim': true,
+    'Add Liquidity': true,
+    'Remove Liquidity': true,
+    'Open Position': true,
+    'Close Position': true,
+    Reward: true,
+    fee: true,
+    other: true, // For empty/unknown tags
   });
   const cancelRef = useRef(false);
 
@@ -2111,20 +1163,9 @@ export default function Home() {
   };
 
   const toggleAllTxTypes = (value) => {
-    setTxTypeFilters({
-      transfer: value,
-      swap: value,
-      stake: value,
-      unstake: value,
-      reward: value,
-      open_position: value,
-      close_position: value,
-      contract_interaction: value,
-      bridge_out: value,
-      bridge_in: value,
-      failed: value,
-      other: value,
-    });
+    const newState = {};
+    Object.keys(txTypeFilters).forEach(k => { newState[k] = value; });
+    setTxTypeFilters(newState);
   };
 
   useEffect(() => {
@@ -2206,7 +1247,7 @@ export default function Home() {
             rawTxs.push(tx);
 
             // Parse and add transactions (failed ones included if gas deductible is enabled)
-            const parsed = parseTransaction(tx, trimmedAddress, includeGasDeductible);
+            const parsed = parseTransaction(tx, trimmedAddress, true); // Always include failed txs
             allTxs.push(...parsed);
           }
 
@@ -2248,22 +1289,13 @@ export default function Home() {
         return txTypeFilters[tag] !== false; // Include if not explicitly false
       });
 
-      // Calculate P&L if enabled
-      if (calculatePnl && filteredTxs.length > 0) {
-        setProgress({ current: filteredTxs.length, total: filteredTxs.length, status: 'Extracting swap prices...' });
+      // Fetch prices and calculate P&L
+      let missingPrices = [];
+      if (filteredTxs.length > 0) {
+        setProgress({ current: filteredTxs.length, total: filteredTxs.length, status: 'Fetching historical prices...' });
 
         // Load price cache
         loadPriceCache();
-
-        // Extract prices from swap transactions first
-        // This gives us accurate on-chain prices before falling back to external APIs
-        const swapDerivedPrices = extractSwapPrices(allTxs, rawTxs, trimmedAddress);
-        const swapPriceCount = Object.keys(swapDerivedPrices).length;
-        if (swapPriceCount > 0) {
-          setProgress(p => ({ ...p, status: `Found ${swapPriceCount} prices from swaps...` }));
-          // Add swap-derived prices to cache
-          Object.assign(priceCache.data, swapDerivedPrices);
-        }
 
         // Calculate P&L using FIFO cost basis
         const costTracker = new CostBasisTracker();
@@ -2272,145 +1304,84 @@ export default function Home() {
         const priceRequests = [];
         const seen = new Set();
         for (const tx of filteredTxs) {
-          if (tx.asset && tx.amount) {
-            const key = `${tx.asset}|${tx.dateStr}`;
+          // Request prices for received tokens
+          if (tx.receivedCurrency) {
+            const key = `${tx.receivedCurrency}|${tx.dateStr}`;
             if (!seen.has(key)) {
               seen.add(key);
-              priceRequests.push({ token: tx.asset, date: tx.dateStr });
+              priceRequests.push({ token: tx.receivedCurrency, date: tx.dateStr });
             }
           }
-          // Also fetch prices for gas fees if gas deductible is enabled
-          if (includeGasDeductible && tx.feeCurrency && tx.feeRaw > 0) {
-            const key = `${tx.feeCurrency}|${tx.dateStr}`;
+          // Request prices for sent tokens
+          if (tx.sentCurrency) {
+            const key = `${tx.sentCurrency}|${tx.dateStr}`;
             if (!seen.has(key)) {
               seen.add(key);
-              priceRequests.push({ token: tx.feeCurrency, date: tx.dateStr });
+              priceRequests.push({ token: tx.sentCurrency, date: tx.dateStr });
             }
           }
         }
 
-        // Fetch prices in batches using POST endpoint (DeFiLlama - no rate limits)
-        // Swap-derived prices are already in cache, so we only fetch missing ones
-        setProgress(p => ({ ...p, status: `Fetching ${priceRequests.length} prices...` }));
+        // Fetch prices from Injective DEX trades (chain-specific) with Pyth fallback
+        setProgress(p => ({ ...p, status: `Fetching ${priceRequests.length} prices from Injective DEX...` }));
 
-        // Batch into groups of 50 for efficiency
-        for (let i = 0; i < priceRequests.length; i += 50) {
+        // Batch into groups of 10 for CoinGecko rate limits
+        for (let i = 0; i < priceRequests.length; i += 10) {
           if (cancelRef.current) break;
-          const batch = priceRequests.slice(i, i + 50);
-          await fetchPricesBatch(batch, swapDerivedPrices);
-          setProgress(p => ({ ...p, status: `Fetching prices... ${Math.min(100, Math.round(((i + 50) / priceRequests.length) * 100))}%` }));
+          const batch = priceRequests.slice(i, i + 10);
+          const result = await fetchPricesBatch(batch);
+          if (result.missing) {
+            missingPrices.push(...result.missing);
+          }
+          setProgress(p => ({ ...p, status: `Fetching prices... ${Math.min(100, Math.round(((i + 10) / priceRequests.length) * 100))}%` }));
         }
 
         // Save price cache
         savePriceCache();
 
-        // Process transactions for P&L
-        // Calculate P&L for ALL transactions
-        const stablecoins = ['USDT', 'USDC', 'DAI', 'BUSD', 'UST', 'FRAX', 'LUSD', 'TUSD'];
-
+        // Process transactions: populate fiat values and calculate P&L
         for (const tx of filteredTxs) {
-          const amount = tx.amount ? (parseFloat(tx.amount.replace(/,/g, '')) || 0) : 0;
-          const price = tx.asset ? getPrice(tx.asset, tx.dateStr) : 0;
-          const isStablecoin = tx.asset && stablecoins.includes(tx.asset.toUpperCase());
+          const receivedQty = tx.receivedQty ? parseFloat(tx.receivedQty) : 0;
+          const sentQty = tx.sentQty ? parseFloat(tx.sentQty) : 0;
+          const receivedPrice = tx.receivedCurrency ? getPrice(tx.receivedCurrency, tx.dateStr) : null;
+          const sentPrice = tx.sentCurrency ? getPrice(tx.sentCurrency, tx.dateStr) : null;
 
-          // Calculate gas cost in USD for this transaction
-          const gasPrice = tx.feeCurrency ? getPrice(tx.feeCurrency, tx.dateStr) : 0;
-          const gasCostUsd = (tx.feeRaw || 0) * gasPrice;
+          // Populate fiat values for CSV (leave empty if price unavailable)
+          if (receivedQty > 0 && receivedPrice !== null) {
+            tx.receivedFiat = (receivedQty * receivedPrice).toFixed(2);
+          }
+          if (sentQty > 0 && sentPrice !== null) {
+            tx.sentFiat = (sentQty * sentPrice).toFixed(2);
+          }
 
-          // Refunds: returning tokens you already owned - P&L = $0
-          // Don't add to cost basis since you already had these tokens
-          if (tx.tag === 'refund') {
-            tx.pnl = '0.00';
-            tx.pnlDisplay = '$0.00';
-          } else if (tx.tag === 'stake') {
-            // Staking is NOT a sale - you still own the tokens, just locked
-            // P&L = $0 for tax purposes
-            tx.pnl = '0.00';
-            tx.pnlDisplay = '$0.00';
-          } else if (tx.tag === 'unstake') {
-            // Unstaking returns your own tokens - NOT income
-            // P&L = $0 for tax purposes
-            tx.pnl = '0.00';
-            tx.pnlDisplay = '$0.00';
-          } else if (tx.tag === 'order_placed') {
-            // Order placed but not filled - NOT a taxable event yet
-            // P&L = $0 until the order actually executes
-            tx.pnl = '0.00';
-            tx.pnlDisplay = '$0.00';
-          } else if (tx.tag === 'open_position' && amount < 0) {
-            // Posting margin for derivatives - NOT a sale, just collateral
-            // P&L = $0 (the actual P&L comes when position is closed)
-            tx.pnl = '0.00';
-            tx.pnlDisplay = '$0.00';
-          } else if (tx.tag === 'bridge_out' || tx.tag === 'bridge_in') {
-            // Bridging tokens between chains - still your tokens, NOT taxable
-            // P&L = $0
-            tx.pnl = '0.00';
-            tx.pnlDisplay = '$0.00';
-          } else if (tx.tag === 'transfer' && amount < 0) {
-            // Outgoing transfer - could be gift/payment, but not a "sale"
-            // P&L = $0 (user should manually categorize if it's a taxable disposal)
-            tx.pnl = '0.00';
-            tx.pnlDisplay = '$0.00';
-          } else if (tx.tag === 'swap' && amount > 0) {
-            // Buy side of a swap - NOT income, you're acquiring tokens in exchange
-            // Just track cost basis, P&L = $0 (the P&L is on the sell side)
-            costTracker.addLot(tx.asset, amount, price, tx.dateStr);
-            tx.pnl = '0.00';
-            tx.pnlDisplay = '$0.00';
-          } else if (tx.tag === 'close_position' && amount > 0) {
-            // Derivative settlement - receiving margin back +/- P&L
-            // Without tracking original margin, we can't calculate actual P&L
-            // Show $0 - user should review derivative trades manually
-            costTracker.addLot(tx.asset, amount, price, tx.dateStr);
-            tx.pnl = '0.00';
-            tx.pnlDisplay = '$0.00';
-          } else if (amount > 0 && tx.asset) {
-            // Incoming tokens (rewards, airdrops, etc.) - show USD value as income
-            costTracker.addLot(tx.asset, amount, price, tx.dateStr);
-            const usdValue = amount * price;
-            // For stablecoins, value is just the amount
-            const displayValue = isStablecoin ? amount : usdValue;
-            tx.pnl = displayValue.toFixed(2);
-            tx.pnlDisplay = `+${displayValue.toFixed(2)}`;
-          } else if (amount < 0 && tx.asset) {
-            // Outgoing tokens
-            const absAmount = Math.abs(amount);
+          // Mark transactions with missing prices
+          tx.missingPrice = (receivedQty > 0 && receivedPrice === null) ||
+                            (sentQty > 0 && sentPrice === null);
 
-            if (isStablecoin) {
-              // Stablecoins: P&L is essentially 0 (selling $1 for $1)
-              // But we still track it for cost basis
-              costTracker.sellFIFO(tx.asset, amount, price);
-              tx.pnl = '0.00';
-              tx.pnlDisplay = '$0.00';
+          // Track price sources for this transaction
+          const recvSource = tx.receivedCurrency ? getPriceSource(tx.receivedCurrency, tx.dateStr) : null;
+          const sentSource = tx.sentCurrency ? getPriceSource(tx.sentCurrency, tx.dateStr) : null;
+          tx.priceSource = recvSource || sentSource; // 'injective-dex' or 'pyth'
+
+          // Add received tokens to cost basis (only if we have a price)
+          if (receivedQty > 0 && tx.receivedCurrency && receivedPrice !== null) {
+            costTracker.addLot(tx.receivedCurrency, receivedQty, receivedPrice, tx.dateStr);
+          }
+
+          // Calculate P&L for sent tokens (only if we have a price)
+          if (sentQty > 0 && tx.sentCurrency && sentPrice !== null) {
+            const { realizedPnl } = costTracker.sellFIFO(tx.sentCurrency, sentQty, sentPrice);
+            if (realizedPnl !== null) {
+              tx.pnl = realizedPnl.toFixed(2);
+              tx.pnlDisplay = realizedPnl >= 0 ? `+${realizedPnl.toFixed(2)}` : realizedPnl.toFixed(2);
             } else {
-              // Non-stablecoin: calculate realized P&L
-              const { realizedPnl, costBasis } = costTracker.sellFIFO(tx.asset, amount, price);
-
-              if (realizedPnl !== null) {
-                // Have cost basis - show actual P&L
-                tx.pnl = realizedPnl.toFixed(2);
-                tx.pnlDisplay = realizedPnl >= 0 ? `+${realizedPnl.toFixed(2)}` : realizedPnl.toFixed(2);
-              } else {
-                // No cost basis - assume acquired at current price (P&L = 0)
-                // This is conservative; we can't know actual gain/loss without acquisition data
-                tx.pnl = '0.00';
-                tx.pnlDisplay = '0.00';
-              }
-            }
-          } else if (tx.tag === 'failed' || (!amount && gasCostUsd > 0)) {
-            // Failed tx or transaction with only gas - show gas cost
-            if (gasCostUsd > 0) {
-              tx.pnl = (-gasCostUsd).toFixed(2);
-              tx.pnlDisplay = `-${gasCostUsd.toFixed(2)}`;
-            } else {
-              tx.pnl = '0.00';
-              tx.pnlDisplay = '0.00';
+              tx.pnl = '';
+              tx.pnlDisplay = '';
             }
           } else {
-            // Any other transaction - show 0
-            tx.pnl = '0.00';
-            tx.pnlDisplay = '0.00';
+            // No price available or no sent amount
+            tx.pnl = '';
+            tx.pnlDisplay = '';
           }
         }
       }
@@ -2426,22 +1397,30 @@ export default function Home() {
       // Calculate stats
       const tagCounts = {};
       let totalPnl = 0;
-      let totalGasUsd = 0;
+      let missingPriceCount = 0;
       finalTxs.forEach(tx => {
         const tag = tx.tag || '';
         tagCounts[tag] = (tagCounts[tag] || 0) + 1;
 
-        // Track gas fees in USD
-        if (includeGasDeductible && tx.feeRaw > 0 && tx.feeCurrency) {
-          const gasPrice = getPrice(tx.feeCurrency, tx.dateStr);
-          totalGasUsd += tx.feeRaw * gasPrice;
+        if (tx.missingPrice) {
+          missingPriceCount++;
         }
-        if (tx.pnl) {
+        if (tx.pnl && tx.pnl !== '') {
           totalPnl += parseFloat(tx.pnl) || 0;
         }
       });
 
-      setStats({ total: finalTxs.length, tagCounts, uniqueTxs: seenHashes.size, totalPnl, totalGasUsd });
+      // Deduplicate missing prices list
+      const uniqueMissing = [...new Set(missingPrices)];
+
+      setStats({
+        total: finalTxs.length,
+        tagCounts,
+        uniqueTxs: seenHashes.size,
+        totalPnl,
+        missingPriceCount,
+        missingPrices: uniqueMissing
+      });
       setShowSuccess(true);
 
     } catch (err) {
@@ -2449,7 +1428,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, [address, startDate, endDate, calculatePnl, includeGasDeductible, txTypeFilters]);
+  }, [address, startDate, endDate, txTypeFilters]);
 
   const downloadCSV = useCallback(() => {
     const csv = generateCSV(transactions);
@@ -2569,28 +1548,6 @@ export default function Home() {
                 }}
               />
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: '#a1a1aa' }}>
-                <input
-                  type="checkbox"
-                  checked={calculatePnl}
-                  onChange={e => setCalculatePnl(e.target.checked)}
-                  disabled={loading}
-                  style={{ width: '16px', height: '16px', accentColor: '#4facfe' }}
-                />
-                Calculate P&L (FIFO)
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: '#a1a1aa', marginLeft: '16px' }}>
-                <input
-                  type="checkbox"
-                  checked={includeGasDeductible}
-                  onChange={e => setIncludeGasDeductible(e.target.checked)}
-                  disabled={loading}
-                  style={{ width: '16px', height: '16px', accentColor: '#fb923c' }}
-                />
-                Gas as Deductible
-              </label>
-            </div>
           </div>
 
           {/* Transaction Type Filters */}
@@ -2618,17 +1575,15 @@ export default function Home() {
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
               {[
-                { key: 'transfer', label: 'Transfers', color: '#60a5fa' },
-                { key: 'swap', label: 'Trades', color: '#fbbf24' },
-                { key: 'stake', label: 'Stake', color: '#a78bfa' },
-                { key: 'unstake', label: 'Unstake', color: '#c4b5fd' },
-                { key: 'reward', label: 'Rewards', color: '#4ade80' },
-                { key: 'open_position', label: 'Open Position', color: '#4ade80' },
-                { key: 'close_position', label: 'Close Position', color: '#f87171' },
-                { key: 'contract_interaction', label: 'Contracts', color: '#f472b6' },
-                { key: 'bridge_out', label: 'Bridge Out', color: '#818cf8' },
-                { key: 'bridge_in', label: 'Bridge In', color: '#818cf8' },
-                { key: 'failed', label: 'Failed', color: '#ef4444' },
+                { key: 'swap', label: 'Swap', color: '#fbbf24' },
+                { key: 'Transfer In', label: 'Transfer In', color: '#4ade80' },
+                { key: 'Transfer Out', label: 'Transfer Out', color: '#f87171' },
+                { key: 'Staking Deposit', label: 'Stake', color: '#a78bfa' },
+                { key: 'Staking Return', label: 'Unstake', color: '#c4b5fd' },
+                { key: 'Staking Claim', label: 'Rewards', color: '#4ade80' },
+                { key: 'Add Liquidity', label: 'Add LP', color: '#60a5fa' },
+                { key: 'Remove Liquidity', label: 'Remove LP', color: '#93c5fd' },
+                { key: 'fee', label: 'Fee', color: '#fb923c' },
                 { key: 'other', label: 'Other', color: '#71717a' },
               ].map(({ key, label, color }) => (
                 <label
@@ -2682,51 +1637,77 @@ export default function Home() {
               <div style={styles.statLabel}>Unique Txs</div>
             </div>
             <div style={styles.statCard}>
-              <div style={{ ...styles.statValue, color: '#60a5fa' }}>{stats.tagCounts['transfer'] || 0}</div>
-              <div style={styles.statLabel}>Transfers</div>
-            </div>
-            <div style={styles.statCard}>
               <div style={{ ...styles.statValue, color: '#fbbf24' }}>{stats.tagCounts['swap'] || 0}</div>
-              <div style={styles.statLabel}>Trades</div>
+              <div style={styles.statLabel}>Swaps</div>
             </div>
             <div style={styles.statCard}>
-              <div style={{ ...styles.statValue, color: '#4ade80' }}>{(stats.tagCounts['stake'] || 0) + (stats.tagCounts['unstake'] || 0)}</div>
-              <div style={styles.statLabel}>Staking</div>
+              <div style={{ ...styles.statValue, color: '#4ade80' }}>{stats.tagCounts['Transfer In'] || 0}</div>
+              <div style={styles.statLabel}>Transfers In</div>
             </div>
             <div style={styles.statCard}>
-              <div style={{ ...styles.statValue, color: '#f472b6' }}>{stats.tagCounts['contract_interaction'] || 0}</div>
-              <div style={styles.statLabel}>Contracts</div>
+              <div style={{ ...styles.statValue, color: '#f87171' }}>{stats.tagCounts['Transfer Out'] || 0}</div>
+              <div style={styles.statLabel}>Transfers Out</div>
             </div>
-            {stats.tagCounts['failed'] > 0 && (
-              <div style={styles.statCard}>
-                <div style={{ ...styles.statValue, color: '#ef4444' }}>{stats.tagCounts['failed']}</div>
-                <div style={styles.statLabel}>Failed Txs</div>
-              </div>
-            )}
-            {stats.totalGasUsd > 0 && (
-              <div style={styles.statCard}>
-                <div style={{ ...styles.statValue, color: '#fb923c' }}>
-                  ${stats.totalGasUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <div style={styles.statLabel}>Total Gas (USD)</div>
-              </div>
-            )}
+            <div style={styles.statCard}>
+              <div style={{ ...styles.statValue, color: '#fb923c' }}>{stats.tagCounts['fee'] || 0}</div>
+              <div style={styles.statLabel}>Fees</div>
+            </div>
             {stats.totalPnl !== undefined && stats.totalPnl !== 0 && (
               <div style={styles.statCard}>
                 <div style={{ ...styles.statValue, color: stats.totalPnl >= 0 ? '#4ade80' : '#f87171' }}>
-                  {stats.totalPnl >= 0 ? '+' : ''}{stats.totalPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {stats.totalPnl >= 0 ? '+' : ''}${Math.abs(stats.totalPnl).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
                 <div style={styles.statLabel}>Est. P&L (USD)</div>
               </div>
             )}
-            {stats.totalGasUsd > 0 && stats.totalPnl !== undefined && (
-              <div style={styles.statCard}>
-                <div style={{ ...styles.statValue, color: (stats.totalPnl - stats.totalGasUsd) >= 0 ? '#4ade80' : '#f87171' }}>
-                  {(stats.totalPnl - stats.totalGasUsd) >= 0 ? '+' : ''}{(stats.totalPnl - stats.totalGasUsd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <div style={styles.statLabel}>Net (P&L - Gas)</div>
+            {stats.missingPriceCount > 0 && (
+              <div style={{ ...styles.statCard, borderColor: '#f59e0b', background: 'rgba(245, 158, 11, 0.1)' }}>
+                <div style={{ ...styles.statValue, color: '#f59e0b' }}>{stats.missingPriceCount}</div>
+                <div style={styles.statLabel}>Missing Prices</div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Warning for missing prices */}
+        {stats?.missingPrices?.length > 0 && (
+          <div style={{
+            padding: '16px 20px',
+            background: 'rgba(245, 158, 11, 0.1)',
+            border: '1px solid rgba(245, 158, 11, 0.3)',
+            borderRadius: '12px',
+            marginBottom: '24px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
+                <path d="M12 9v4"/>
+                <path d="M12 17h.01"/>
+              </svg>
+              <div>
+                <div style={{ fontWeight: '600', color: '#f59e0b', marginBottom: '4px' }}>
+                  Missing Historical Prices
+                </div>
+                <div style={{ color: '#a1a1aa', fontSize: '14px', lineHeight: '1.5' }}>
+                  Could not find USD prices for {stats.missingPrices.length} token/date combinations.
+                  These transactions will have empty fiat values and P&L in the CSV export.
+                  You may need to manually add prices for accurate tax reporting.
+                </div>
+                <details style={{ marginTop: '8px' }}>
+                  <summary style={{ color: '#f59e0b', cursor: 'pointer', fontSize: '13px' }}>
+                    Show missing prices ({stats.missingPrices.length})
+                  </summary>
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#71717a', maxHeight: '120px', overflow: 'auto' }}>
+                    {stats.missingPrices.slice(0, 50).map((item, i) => (
+                      <div key={i}>{item}</div>
+                    ))}
+                    {stats.missingPrices.length > 50 && (
+                      <div style={{ color: '#f59e0b' }}>...and {stats.missingPrices.length - 50} more</div>
+                    )}
+                  </div>
+                </details>
+              </div>
+            </div>
           </div>
         )}
 
@@ -2739,7 +1720,7 @@ export default function Home() {
                 onClick={() => { setFilter('all'); setCurrentPage(1); }}
                 style={{
                   ...styles.filterButton,
-                  ...(filter === 'all' ? { background: 'rgba(79, 172, 254, 0.15)', borderColor: '#4facfe', color: '#4facfe' } : {}),
+                  ...(filter === 'all' ? { background: 'rgba(79, 172, 254, 0.15)', border: '1px solid #4facfe', color: '#4facfe' } : {}),
                 }}
               >
                 All ({stats.total})
@@ -2755,7 +1736,7 @@ export default function Home() {
                       onClick={() => { setFilter(tag); setCurrentPage(1); }}
                       style={{
                         ...styles.filterButton,
-                        ...(isActive ? { background: c.bg, borderColor: c.color, color: c.color } : {}),
+                        ...(isActive ? { background: c.bg, border: `1px solid ${c.color}`, color: c.color } : {}),
                       }}
                     >
                       {c.label} ({count})
@@ -2830,15 +1811,19 @@ export default function Home() {
               )}
             </div>
             <div style={{ overflowX: 'auto' }}>
-              <table style={styles.table}>
+              <table style={{ ...styles.table, minWidth: '1400px' }}>
                 <thead>
                   <tr>
                     <th style={{ ...styles.th, textAlign: 'left' }}>Date</th>
-                    <th style={{ ...styles.th, textAlign: 'left' }}>Asset</th>
-                    <th style={{ ...styles.th, textAlign: 'right' }}>Amount</th>
+                    <th style={{ ...styles.th, textAlign: 'right' }}>Received Qty</th>
+                    <th style={{ ...styles.th, textAlign: 'left' }}>Received</th>
+                    <th style={{ ...styles.th, textAlign: 'right' }}>Recv Fiat</th>
+                    <th style={{ ...styles.th, textAlign: 'right' }}>Sent Qty</th>
+                    <th style={{ ...styles.th, textAlign: 'left' }}>Sent</th>
+                    <th style={{ ...styles.th, textAlign: 'right' }}>Sent Fiat</th>
                     <th style={{ ...styles.th, textAlign: 'right' }}>Fee</th>
-                    <th style={{ ...styles.th, textAlign: 'right' }}>P&L</th>
-                    <th style={{ ...styles.th, textAlign: 'left' }}>Type</th>
+                    <th style={{ ...styles.th, textAlign: 'left' }}>Fee Cur</th>
+                    <th style={{ ...styles.th, textAlign: 'left' }}>Tag</th>
                     <th style={{ ...styles.th, textAlign: 'left' }}>Notes</th>
                     <th style={{ ...styles.th, textAlign: 'center', width: '56px' }}>Tx</th>
                   </tr>
@@ -2846,46 +1831,71 @@ export default function Home() {
                 <tbody>
                   {paginatedTxs.map((tx, i) => {
                     const c = TAG_CONFIG[tx.tag] || TAG_CONFIG[''];
-                    const isPositive = tx.amount && !tx.amount.startsWith('-');
-                    const isNegative = tx.amount && tx.amount.startsWith('-');
+                    const hasMissingPrice = tx.missingPrice;
                     return (
-                      <tr key={`${tx.txHash}-${i}`}>
+                      <tr key={`${tx.txHash}-${i}`} style={hasMissingPrice ? { background: 'rgba(245, 158, 11, 0.08)' } : {}}>
                         <td style={styles.td}>
-                          <div style={{ fontWeight: '500', color: '#fafafa' }}>{tx.dateDisplay}</div>
-                          <div style={{ fontSize: '12px', color: '#52525b', marginTop: '2px' }}>{tx.timeDisplay}</div>
-                        </td>
-                        <td style={{ ...styles.td, fontWeight: '600', color: '#fafafa' }}>
-                          {tx.asset || '—'}
+                          <div style={{ fontWeight: '500', color: '#fafafa', fontSize: '13px' }}>{tx.dateFormatted}</div>
                         </td>
                         <td style={{
                           ...styles.td,
                           textAlign: 'right',
                           fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-                          fontWeight: '500',
-                          color: isPositive ? '#4ade80' : isNegative ? '#f87171' : '#52525b',
+                          color: tx.receivedQty ? '#4ade80' : '#3f3f46',
                           fontVariantNumeric: 'tabular-nums',
                         }}>
-                          {tx.amount || '—'}
+                          {tx.receivedQty || ''}
                         </td>
-                        <td style={{ ...styles.td, textAlign: 'right', color: '#52525b', fontSize: '13px' }}>
-                          {tx.feeAmount ? `${tx.feeAmount} ${tx.feeCurrency}` : '—'}
+                        <td style={{ ...styles.td, fontWeight: '500', color: tx.receivedCurrency ? '#4ade80' : '#3f3f46' }}>
+                          {tx.receivedCurrency || ''}
                         </td>
                         <td style={{
                           ...styles.td,
                           textAlign: 'right',
                           fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-                          fontWeight: '500',
-                          color: tx.pnl ? (parseFloat(tx.pnl) > 0 ? '#4ade80' : parseFloat(tx.pnl) < 0 ? '#f87171' : '#52525b') : '#3f3f46',
+                          color: tx.receivedFiat ? '#4ade80' : '#3f3f46',
+                          fontVariantNumeric: 'tabular-nums',
+                        }} title={tx.priceSource ? `Price from ${tx.priceSource}` : ''}>
+                          {tx.receivedFiat ? `$${tx.receivedFiat}` : ''}
+                          {tx.receivedFiat && tx.priceSource === 'pyth' && (
+                            <span style={{ fontSize: '9px', color: '#f59e0b', marginLeft: '2px' }} title="Cross-chain price (Pyth)">*</span>
+                          )}
+                        </td>
+                        <td style={{
+                          ...styles.td,
+                          textAlign: 'right',
+                          fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                          color: tx.sentQty ? '#f87171' : '#3f3f46',
                           fontVariantNumeric: 'tabular-nums',
                         }}>
-                          {(() => {
-                            if (!tx.pnl) return '—';
-                            const pnlNum = parseFloat(tx.pnl);
-                            if (Math.abs(pnlNum) < 0.01 && pnlNum !== 0) {
-                              return pnlNum > 0 ? '<+$0.01' : '<-$0.01';
-                            }
-                            return tx.pnlDisplay ? `$${tx.pnlDisplay}` : `$${tx.pnl}`;
-                          })()}
+                          {tx.sentQty || ''}
+                        </td>
+                        <td style={{ ...styles.td, fontWeight: '500', color: tx.sentCurrency ? '#f87171' : '#3f3f46' }}>
+                          {tx.sentCurrency || ''}
+                        </td>
+                        <td style={{
+                          ...styles.td,
+                          textAlign: 'right',
+                          fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                          color: tx.sentFiat ? '#f87171' : '#3f3f46',
+                          fontVariantNumeric: 'tabular-nums',
+                        }} title={tx.priceSource ? `Price from ${tx.priceSource}` : ''}>
+                          {tx.sentFiat ? `$${tx.sentFiat}` : ''}
+                          {tx.sentFiat && tx.priceSource === 'pyth' && (
+                            <span style={{ fontSize: '9px', color: '#f59e0b', marginLeft: '2px' }} title="Cross-chain price (Pyth)">*</span>
+                          )}
+                        </td>
+                        <td style={{
+                          ...styles.td,
+                          textAlign: 'right',
+                          fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                          color: '#fb923c',
+                          fontVariantNumeric: 'tabular-nums',
+                        }}>
+                          {tx.feeAmount || ''}
+                        </td>
+                        <td style={{ ...styles.td, color: '#fb923c' }}>
+                          {tx.feeCurrency || ''}
                         </td>
                         <td style={styles.td}>
                           {tx.tag ? (
@@ -2896,8 +1906,8 @@ export default function Home() {
                             <span style={{ color: '#3f3f46' }}>—</span>
                           )}
                         </td>
-                        <td style={{ ...styles.td, color: '#71717a', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={tx.notes}>
-                          {tx.notes || '—'}
+                        <td style={{ ...styles.td, color: '#71717a', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={tx.notes}>
+                          {tx.notes || ''}
                         </td>
                         <td style={{ ...styles.td, textAlign: 'center' }}>
                           <a
@@ -2905,7 +1915,7 @@ export default function Home() {
                             target="_blank"
                             rel="noopener noreferrer"
                             style={styles.link}
-                            title="View on Explorer"
+                            title={tx.txHash}
                           >
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
@@ -2956,7 +1966,7 @@ export default function Home() {
             </a>
           </p>
           <p style={{ fontSize: '12px', color: '#3f3f46', margin: 0 }}>
-            P&L calculated using FIFO cost basis. All data sourced from Injective APIs.
+            Prices from Injective DEX trades (chain-specific). <span style={{ color: '#f59e0b' }}>*</span> = Pyth fallback (cross-chain).
           </p>
           <p style={{ fontSize: '12px', color: '#3f3f46', margin: '4px 0 0' }}>
             This tool is not financial advice.
