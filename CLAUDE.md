@@ -277,7 +277,7 @@ Test each one. If API works, implement and mark [x]. If no API, mark [!].
 - [ ] Eteria
 - [ ] Ethereal
 - [x] EthereumClassic - `etc.blockscout.com/api` - API works, limited DeFi activity on chain
-- [ ] Etherlink
+- [x] Etherlink - `explorer.etherlink.com/api` - API works, limited DeFi activity (newer chain)
 - [ ] exSat
 - [ ] Filecoin
 - [ ] Findora

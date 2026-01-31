@@ -6,6 +6,7 @@ import aurora from './aurora';
 import bob from './bob';
 import celo from './celo';
 import etc from './etc';
+import etherlink from './etherlink';
 import fuse from './fuse';
 
 // All available chains
@@ -14,6 +15,7 @@ export const chains: Record<string, ChainConfig> = {
   bob,
   celo,
   etc,
+  etherlink,
   fuse,
 };
 
