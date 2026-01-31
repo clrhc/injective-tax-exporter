@@ -9,6 +9,7 @@ import celo from './celo';
 import etc from './etc';
 import etherlink from './etherlink';
 import fuse from './fuse';
+import hemi from './hemi';
 
 // All available chains
 export const chains: Record<string, ChainConfig> = {
@@ -19,6 +20,7 @@ export const chains: Record<string, ChainConfig> = {
   etc,
   etherlink,
   fuse,
+  hemi,
 };
 
 // Get chain by ID

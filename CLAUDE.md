@@ -298,7 +298,7 @@ Test each one. If API works, implement and mark [x]. If no API, mark [!].
 - [ ] Haven1
 - [ ] Hedera
 - [ ] HeLa
-- [ ] Hemi
+- [x] Hemi - `explorer.hemi.xyz/api` - Tested with 0x25b6f5f1525f0074d53570ea2fb4cd9ee545b296 (14 swaps, 0% missing prices)
 - [ ] Hoo
 - [ ] Horizen EON
 - [ ] HPB
