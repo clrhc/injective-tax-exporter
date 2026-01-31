@@ -750,7 +750,7 @@ const styles = {
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
   },
   inner: {
-    maxWidth: '1280px',
+    maxWidth: '1600px',
     margin: '0 auto',
     padding: '48px 24px',
   },
@@ -1013,10 +1013,10 @@ function LoadingModal({ isOpen, progress, onCancel }) {
     : 0;
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div className="modal-overlay" style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.9)', backdropFilter: 'blur(8px)' }} />
-      <div style={{ position: 'relative', background: '#18181b', borderRadius: '20px', border: '1px solid #27272a', padding: '48px', maxWidth: '420px', width: '90%', textAlign: 'center' }}>
-        <div style={{ width: '80px', height: '80px', margin: '0 auto 32px', position: 'relative' }}>
+      <div className="modal-content" style={{ position: 'relative', background: '#18181b', borderRadius: '20px', border: '1px solid #27272a', padding: '48px 32px', maxWidth: '420px', width: '100%', textAlign: 'center' }}>
+        <div className="modal-progress-ring" style={{ width: '80px', height: '80px', margin: '0 auto 24px', position: 'relative' }}>
           <svg style={{ position: 'absolute', inset: 0 }} viewBox="0 0 80 80">
             <circle cx="40" cy="40" r="36" fill="none" stroke="#27272a" strokeWidth="4" />
             <circle
@@ -1040,15 +1040,16 @@ function LoadingModal({ isOpen, progress, onCancel }) {
             {Math.round(percentage)}%
           </div>
         </div>
-        <h3 style={{ margin: '0 0 8px', fontSize: '20px', fontWeight: '600', color: '#fafafa' }}>Fetching Transactions</h3>
-        <p style={{ margin: '0 0 32px', color: '#71717a', fontSize: '14px' }}>{progress.status}</p>
-        <div style={{ fontSize: '36px', fontWeight: '700', color: '#fafafa', marginBottom: '32px', fontVariantNumeric: 'tabular-nums' }}>
+        <h3 className="modal-title" style={{ margin: '0 0 8px', fontSize: '20px', fontWeight: '600', color: '#fafafa' }}>Fetching Transactions</h3>
+        <p className="modal-status" style={{ margin: '0 0 24px', color: '#71717a', fontSize: '14px', wordBreak: 'break-word' }}>{progress.status}</p>
+        <div className="modal-count" style={{ fontSize: '32px', fontWeight: '700', color: '#fafafa', marginBottom: '24px', fontVariantNumeric: 'tabular-nums' }}>
           {progress.current.toLocaleString()}
           <span style={{ fontSize: '14px', color: '#52525b', fontWeight: '400', marginLeft: '8px' }}>records</span>
         </div>
         <button
           onClick={onCancel}
-          style={{ padding: '12px 32px', background: 'transparent', border: '1px solid #3f3f46', borderRadius: '10px', color: '#a1a1aa', fontSize: '14px', fontWeight: '500', cursor: 'pointer' }}
+          className="modal-cancel-btn"
+          style={{ padding: '14px 32px', background: 'transparent', border: '1px solid #3f3f46', borderRadius: '10px', color: '#a1a1aa', fontSize: '14px', fontWeight: '500', cursor: 'pointer', width: '100%', maxWidth: '200px' }}
         >
           Cancel
         </button>
@@ -1060,21 +1061,21 @@ function LoadingModal({ isOpen, progress, onCancel }) {
 function SuccessModal({ isOpen, stats, onClose }) {
   if (!isOpen || !stats) return null;
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div className="modal-overlay" style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.9)', backdropFilter: 'blur(8px)' }} onClick={onClose} />
-      <div style={{ position: 'relative', background: '#18181b', borderRadius: '20px', border: '1px solid #27272a', padding: '48px', maxWidth: '420px', width: '90%', textAlign: 'center' }}>
-        <div style={{ width: '80px', height: '80px', margin: '0 auto 32px', background: 'rgba(34, 197, 94, 0.15)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="modal-content" style={{ position: 'relative', background: '#18181b', borderRadius: '20px', border: '1px solid #27272a', padding: '48px 32px', maxWidth: '420px', width: '100%', textAlign: 'center' }}>
+        <div className="modal-success-icon" style={{ width: '80px', height: '80px', margin: '0 auto 24px', background: 'rgba(34, 197, 94, 0.15)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="20 6 9 17 4 12" />
           </svg>
         </div>
-        <h3 style={{ margin: '0 0 8px', fontSize: '22px', fontWeight: '600', color: '#fafafa' }}>Ready to Export</h3>
-        <p style={{ margin: '0 0 32px', color: '#71717a', fontSize: '15px' }}>
+        <h3 className="modal-title" style={{ margin: '0 0 8px', fontSize: '22px', fontWeight: '600', color: '#fafafa' }}>Ready to Export</h3>
+        <p style={{ margin: '0 0 24px', color: '#71717a', fontSize: '15px' }}>
           {stats.total.toLocaleString()} transactions loaded
         </p>
         <button
           onClick={onClose}
-          style={{ width: '100%', padding: '14px', background: '#22c55e', border: 'none', borderRadius: '10px', color: '#fff', fontSize: '15px', fontWeight: '600', cursor: 'pointer' }}
+          style={{ width: '100%', padding: '16px', background: '#22c55e', border: 'none', borderRadius: '10px', color: '#fff', fontSize: '15px', fontWeight: '600', cursor: 'pointer' }}
         >
           View Transactions
         </button>
@@ -1096,7 +1097,7 @@ export default function Home() {
   const [currentPage, setCurrentPage] = useState(1);
   const [filter, setFilter] = useState('all');
   const [showSuccess, setShowSuccess] = useState(false);
-  const [tokensLoaded, setTokensLoaded] = useState(false);
+  const [tokenCount, setTokenCount] = useState(0);
   // Default date range: 1 year ago to today
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
@@ -1135,7 +1136,9 @@ export default function Home() {
   };
 
   useEffect(() => {
-    loadTokensGlobal().then(() => setTokensLoaded(true));
+    loadTokensGlobal().then((data) => {
+      setTokenCount(Object.keys(data || {}).length);
+    });
   }, []);
 
   const filteredTxs = useMemo(() => {
@@ -1168,8 +1171,8 @@ export default function Home() {
 
     try {
       // Ensure tokens are loaded
-      await loadTokensGlobal();
-      setTokensLoaded(true);
+      const tokenData = await loadTokensGlobal();
+      setTokenCount(Object.keys(tokenData || {}).length);
       setProgress(p => ({ ...p, status: 'Connecting to Injective...' }));
 
       const allTxs = [];
@@ -1462,18 +1465,18 @@ export default function Home() {
         onClose={() => setShowSuccess(false)}
       />
 
-      <div style={styles.inner}>
+      <div style={styles.inner} className="responsive-inner">
         {/* Header */}
-        <header style={styles.header}>
-          <div style={styles.headerLeft}>
-            <div style={styles.logo}>INJ</div>
+        <header style={styles.header} className="responsive-header">
+          <div style={styles.headerLeft} className="responsive-header-left">
+            <div style={styles.logo} className="responsive-logo">INJ</div>
             <div>
-              <h1 style={styles.title}>Injective Tax Exporter</h1>
-              <p style={styles.subtitle}>
+              <h1 style={styles.title} className="responsive-title">Injective Tax Exporter</h1>
+              <p style={styles.subtitle} className="responsive-subtitle">
                 Export transaction history for Awaken Tax
-                {tokensLoaded && (
+                {tokenCount > 0 && (
                   <span style={{ color: '#4facfe', marginLeft: '8px' }}>
-                    {Object.keys(tokenCache.data || {}).length} tokens
+                    {tokenCount} tokens
                   </span>
                 )}
               </p>
@@ -1482,9 +1485,9 @@ export default function Home() {
         </header>
 
         {/* Input Card */}
-        <div style={styles.card}>
-          <h2 style={styles.cardTitle}>Wallet Address</h2>
-          <div style={styles.inputGroup}>
+        <div style={styles.card} className="responsive-card">
+          <h2 style={styles.cardTitle} className="responsive-card-title">Wallet Address</h2>
+          <div style={styles.inputGroup} className="responsive-input-group">
             <input
               value={address}
               onChange={e => setAddress(e.target.value)}
@@ -1495,6 +1498,7 @@ export default function Home() {
                 ...styles.input,
                 opacity: loading ? 0.5 : 1,
               }}
+              className="responsive-input"
               spellCheck={false}
               autoComplete="off"
             />
@@ -1505,6 +1509,7 @@ export default function Home() {
                 ...styles.button,
                 ...(loading || !address.trim() ? styles.buttonDisabled : {}),
               }}
+              className="responsive-button"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="11" cy="11" r="8" />
@@ -1515,8 +1520,8 @@ export default function Home() {
           </div>
 
           {/* Date Range & Options */}
-          <div style={{ marginTop: '20px', display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ marginTop: '20px', display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'center' }} className="responsive-date-range">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} className="responsive-date-group">
               <label style={{ fontSize: '13px', color: '#71717a' }}>From:</label>
               <input
                 type="date"
@@ -1531,9 +1536,10 @@ export default function Home() {
                   fontSize: '13px',
                   colorScheme: 'dark',
                 }}
+                className="responsive-date-input"
               />
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} className="responsive-date-group">
               <label style={{ fontSize: '13px', color: '#71717a' }}>To:</label>
               <input
                 type="date"
@@ -1548,17 +1554,18 @@ export default function Home() {
                   fontSize: '13px',
                   colorScheme: 'dark',
                 }}
+                className="responsive-date-input"
               />
             </div>
           </div>
 
           {/* Transaction Type Filters */}
-          <div style={{ marginTop: '20px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+          <div style={{ marginTop: '20px' }} className="responsive-tx-types">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }} className="responsive-tx-types-header">
               <span style={{ fontSize: '12px', color: '#71717a', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Include Transaction Types
               </span>
-              <div style={{ display: 'flex', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '8px' }} className="responsive-tx-types-buttons">
                 <button
                   onClick={() => toggleAllTxTypes(true)}
                   disabled={loading}
@@ -1575,7 +1582,7 @@ export default function Home() {
                 </button>
               </div>
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }} className="responsive-tx-types-grid">
               {[
                 { key: 'swap', label: 'Swap', color: '#fbbf24' },
                 { key: 'Transfer In', label: 'Transfer In', color: '#4ade80' },
@@ -1590,6 +1597,7 @@ export default function Home() {
               ].map(({ key, label, color }) => (
                 <label
                   key={key}
+                  className="responsive-tx-type-label"
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -1629,49 +1637,49 @@ export default function Home() {
 
         {/* Stats Grid */}
         {stats && (
-          <div style={styles.statsGrid}>
-            <div style={styles.statCard}>
-              <div style={styles.statValue}>{stats.total.toLocaleString()}</div>
-              <div style={styles.statLabel}>Total Records</div>
+          <div style={styles.statsGrid} className="responsive-stats-grid">
+            <div style={styles.statCard} className="responsive-stat-card">
+              <div style={styles.statValue} className="responsive-stat-value">{stats.total.toLocaleString()}</div>
+              <div style={styles.statLabel} className="responsive-stat-label">Total Records</div>
             </div>
-            <div style={styles.statCard}>
-              <div style={{ ...styles.statValue, color: '#a78bfa' }}>{stats.uniqueTxs?.toLocaleString() || '—'}</div>
-              <div style={styles.statLabel}>Unique Txs</div>
+            <div style={styles.statCard} className="responsive-stat-card">
+              <div style={{ ...styles.statValue, color: '#a78bfa' }} className="responsive-stat-value">{stats.uniqueTxs?.toLocaleString() || '—'}</div>
+              <div style={styles.statLabel} className="responsive-stat-label">Unique Txs</div>
             </div>
-            <div style={styles.statCard}>
-              <div style={{ ...styles.statValue, color: '#fbbf24' }}>{stats.tagCounts['swap'] || 0}</div>
-              <div style={styles.statLabel}>Swaps</div>
+            <div style={styles.statCard} className="responsive-stat-card">
+              <div style={{ ...styles.statValue, color: '#fbbf24' }} className="responsive-stat-value">{stats.tagCounts['swap'] || 0}</div>
+              <div style={styles.statLabel} className="responsive-stat-label">Swaps</div>
             </div>
-            <div style={styles.statCard}>
-              <div style={{ ...styles.statValue, color: '#4ade80' }}>{stats.tagCounts['Transfer In'] || 0}</div>
-              <div style={styles.statLabel}>Transfers In</div>
+            <div style={styles.statCard} className="responsive-stat-card">
+              <div style={{ ...styles.statValue, color: '#4ade80' }} className="responsive-stat-value">{stats.tagCounts['Transfer In'] || 0}</div>
+              <div style={styles.statLabel} className="responsive-stat-label">Transfers In</div>
             </div>
-            <div style={styles.statCard}>
-              <div style={{ ...styles.statValue, color: '#f87171' }}>{stats.tagCounts['Transfer Out'] || 0}</div>
-              <div style={styles.statLabel}>Transfers Out</div>
+            <div style={styles.statCard} className="responsive-stat-card">
+              <div style={{ ...styles.statValue, color: '#f87171' }} className="responsive-stat-value">{stats.tagCounts['Transfer Out'] || 0}</div>
+              <div style={styles.statLabel} className="responsive-stat-label">Transfers Out</div>
             </div>
-            <div style={styles.statCard}>
-              <div style={{ ...styles.statValue, color: '#fb923c' }}>{stats.tagCounts['fee'] || 0}</div>
-              <div style={styles.statLabel}>Fees</div>
+            <div style={styles.statCard} className="responsive-stat-card">
+              <div style={{ ...styles.statValue, color: '#fb923c' }} className="responsive-stat-value">{stats.tagCounts['fee'] || 0}</div>
+              <div style={styles.statLabel} className="responsive-stat-label">Fees</div>
             </div>
             {stats.totalPnl !== undefined && stats.totalPnl !== 0 && (
-              <div style={styles.statCard}>
-                <div style={{ ...styles.statValue, color: stats.totalPnl >= 0 ? '#4ade80' : '#f87171' }}>
+              <div style={styles.statCard} className="responsive-stat-card">
+                <div style={{ ...styles.statValue, color: stats.totalPnl >= 0 ? '#4ade80' : '#f87171' }} className="responsive-stat-value">
                   {stats.totalPnl >= 0 ? '+' : ''}${Math.abs(stats.totalPnl).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
-                <div style={styles.statLabel}>Est. P&L (USD)</div>
+                <div style={styles.statLabel} className="responsive-stat-label">Est. P&L (USD)</div>
               </div>
             )}
             {stats.missingPriceCount > 0 && (
-              <div style={{ ...styles.statCard, borderColor: '#f59e0b', background: 'rgba(245, 158, 11, 0.1)' }}>
-                <div style={{ ...styles.statValue, color: '#f59e0b' }}>{stats.missingPriceCount}</div>
-                <div style={styles.statLabel}>Missing Prices</div>
+              <div style={{ ...styles.statCard, borderColor: '#f59e0b', background: 'rgba(245, 158, 11, 0.1)' }} className="responsive-stat-card">
+                <div style={{ ...styles.statValue, color: '#f59e0b' }} className="responsive-stat-value">{stats.missingPriceCount}</div>
+                <div style={styles.statLabel} className="responsive-stat-label">Missing Prices</div>
               </div>
             )}
             {stats.timeDiffCount > 0 && (
-              <div style={{ ...styles.statCard, borderColor: '#3b82f6', background: 'rgba(59, 130, 246, 0.1)' }}>
-                <div style={{ ...styles.statValue, color: '#3b82f6' }}>{stats.timeDiffCount}</div>
-                <div style={styles.statLabel}>Approx Prices</div>
+              <div style={{ ...styles.statCard, borderColor: '#3b82f6', background: 'rgba(59, 130, 246, 0.1)' }} className="responsive-stat-card">
+                <div style={{ ...styles.statValue, color: '#3b82f6' }} className="responsive-stat-value">{stats.timeDiffCount}</div>
+                <div style={styles.statLabel} className="responsive-stat-label">Approx Prices</div>
               </div>
             )}
           </div>
@@ -1679,24 +1687,24 @@ export default function Home() {
 
         {/* Warning for missing prices */}
         {stats?.missingPrices?.length > 0 && (
-          <div style={{
+          <div className="responsive-warning-box" style={{
             padding: '16px 20px',
             background: 'rgba(245, 158, 11, 0.1)',
             border: '1px solid rgba(245, 158, 11, 0.3)',
             borderRadius: '12px',
             marginBottom: '24px',
           }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }} className="responsive-warning-content">
+              <svg className="responsive-warning-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
                 <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
                 <path d="M12 9v4"/>
                 <path d="M12 17h.01"/>
               </svg>
               <div>
-                <div style={{ fontWeight: '600', color: '#f59e0b', marginBottom: '4px' }}>
+                <div className="responsive-warning-title" style={{ fontWeight: '600', color: '#f59e0b', marginBottom: '4px' }}>
                   Missing Historical Prices
                 </div>
-                <div style={{ color: '#a1a1aa', fontSize: '14px', lineHeight: '1.5' }}>
+                <div className="responsive-warning-text" style={{ color: '#a1a1aa', fontSize: '14px', lineHeight: '1.5' }}>
                   Could not find USD prices for {stats.missingPrices.length} token/date combinations.
                   This usually means the token had no trades within 7 days of the transaction.
                   These will have empty fiat values in the CSV - you may need to add prices manually.
@@ -1721,23 +1729,23 @@ export default function Home() {
 
         {/* Warning for approximate prices (time diff) */}
         {stats?.timeDiffList?.length > 0 && (
-          <div style={{
+          <div className="responsive-warning-box" style={{
             padding: '16px 20px',
             background: 'rgba(59, 130, 246, 0.1)',
             border: '1px solid rgba(59, 130, 246, 0.3)',
             borderRadius: '12px',
             marginBottom: '24px',
           }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }} className="responsive-warning-content">
+              <svg className="responsive-warning-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
                 <circle cx="12" cy="12" r="10"/>
                 <polyline points="12 6 12 12 16 14"/>
               </svg>
               <div>
-                <div style={{ fontWeight: '600', color: '#3b82f6', marginBottom: '4px' }}>
+                <div className="responsive-warning-title" style={{ fontWeight: '600', color: '#3b82f6', marginBottom: '4px' }}>
                   Approximate Prices
                 </div>
-                <div style={{ color: '#a1a1aa', fontSize: '14px', lineHeight: '1.5' }}>
+                <div className="responsive-warning-text" style={{ color: '#a1a1aa', fontSize: '14px', lineHeight: '1.5' }}>
                   {stats.timeDiffCount} transactions use prices from trades that occurred hours away from the actual transaction.
                   These prices may not reflect the exact value at transaction time.
                 </div>
@@ -1761,11 +1769,12 @@ export default function Home() {
 
         {/* Filter Buttons */}
         {stats && (
-          <div style={styles.filterSection}>
+          <div style={styles.filterSection} className="responsive-filter-section">
             <div style={styles.filterLabel}>Filter by Type</div>
-            <div style={styles.filterGroup}>
+            <div style={styles.filterGroup} className="responsive-filter-group">
               <button
                 onClick={() => { setFilter('all'); setCurrentPage(1); }}
+                className="responsive-filter-button"
                 style={{
                   ...styles.filterButton,
                   ...(filter === 'all' ? { background: 'rgba(79, 172, 254, 0.15)', border: '1px solid #4facfe', color: '#4facfe' } : {}),
@@ -1782,6 +1791,7 @@ export default function Home() {
                     <button
                       key={tag || 'other'}
                       onClick={() => { setFilter(tag); setCurrentPage(1); }}
+                      className="responsive-filter-button"
                       style={{
                         ...styles.filterButton,
                         ...(isActive ? { background: c.bg, border: `1px solid ${c.color}`, color: c.color } : {}),
@@ -1797,8 +1807,8 @@ export default function Home() {
 
         {/* Download Button */}
         {transactions.length > 0 && (
-          <div style={styles.downloadSection}>
-            <button onClick={downloadCSV} style={styles.downloadButton}>
+          <div style={styles.downloadSection} className="responsive-download-section">
+            <button onClick={downloadCSV} style={styles.downloadButton} className="responsive-download-button">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                 <polyline points="7 10 12 15 17 10" />
@@ -1814,20 +1824,21 @@ export default function Home() {
 
         {/* Transaction Table */}
         {filteredTxs.length > 0 && (
-          <div style={{ ...styles.card, padding: 0, overflow: 'hidden' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', borderBottom: '1px solid #27272a', flexWrap: 'wrap', gap: '16px' }}>
-              <h3 style={{ margin: 0, fontSize: '14px', fontWeight: '600', color: '#fafafa' }}>
+          <div style={{ ...styles.card, padding: 0, overflow: 'hidden' }} className="responsive-table-card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', borderBottom: '1px solid #27272a', flexWrap: 'wrap', gap: '16px' }} className="responsive-table-header">
+              <h3 style={{ margin: 0, fontSize: '14px', fontWeight: '600', color: '#fafafa' }} className="responsive-table-title">
                 Transaction History
                 <span style={{ marginLeft: '8px', color: '#52525b', fontWeight: '400' }}>
                   {filteredTxs.length.toLocaleString()} records
                 </span>
               </h3>
               {totalPages > 1 && (
-                <div style={styles.pagination}>
+                <div style={styles.pagination} className="responsive-pagination">
                   <button
                     onClick={() => setCurrentPage(1)}
                     disabled={currentPage === 1}
                     style={{ ...styles.pageButton, opacity: currentPage === 1 ? 0.3 : 1 }}
+                    className="responsive-page-button"
                   >
                     First
                   </button>
@@ -1835,16 +1846,18 @@ export default function Home() {
                     onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                     disabled={currentPage === 1}
                     style={{ ...styles.pageButton, opacity: currentPage === 1 ? 0.3 : 1 }}
+                    className="responsive-page-button"
                   >
                     Prev
                   </button>
-                  <span style={{ padding: '0 12px', color: '#52525b', fontSize: '13px', fontVariantNumeric: 'tabular-nums' }}>
+                  <span style={{ padding: '0 12px', color: '#52525b', fontSize: '13px', fontVariantNumeric: 'tabular-nums' }} className="responsive-page-info">
                     {currentPage} / {totalPages}
                   </span>
                   <button
                     onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                     disabled={currentPage === totalPages}
                     style={{ ...styles.pageButton, opacity: currentPage === totalPages ? 0.3 : 1 }}
+                    className="responsive-page-button"
                   >
                     Next
                   </button>
@@ -1852,13 +1865,16 @@ export default function Home() {
                     onClick={() => setCurrentPage(totalPages)}
                     disabled={currentPage === totalPages}
                     style={{ ...styles.pageButton, opacity: currentPage === totalPages ? 0.3 : 1 }}
+                    className="responsive-page-button"
                   >
                     Last
                   </button>
                 </div>
               )}
             </div>
-            <div style={{ overflowX: 'auto' }}>
+
+            {/* Desktop Table View */}
+            <div style={{ overflowX: 'auto' }} className="responsive-table-wrapper">
               <table style={{ ...styles.table, minWidth: '1400px' }}>
                 <thead>
                   <tr>
@@ -1984,30 +2000,98 @@ export default function Home() {
                 </tbody>
               </table>
             </div>
+
+            {/* Mobile Card View */}
+            <div className="responsive-mobile-cards" style={{ padding: '12px' }}>
+              {paginatedTxs.map((tx, i) => {
+                const c = TAG_CONFIG[tx.tag] || TAG_CONFIG[''];
+                const hasMissingPrice = tx.missingPrice;
+                return (
+                  <div
+                    key={`mobile-${tx.txHash}-${i}`}
+                    className={`mobile-tx-card${hasMissingPrice ? ' missing-price' : ''}`}
+                  >
+                    <div className="mobile-tx-header">
+                      <div className="mobile-tx-date">{tx.dateFormatted}</div>
+                      {tx.tag && (
+                        <span className="mobile-tx-tag" style={{ background: c.bg, color: c.color }}>
+                          {c.label}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mobile-tx-body">
+                      {tx.receivedQty && (
+                        <div className="mobile-tx-row">
+                          <span className="mobile-tx-label">Received</span>
+                          <span className="mobile-tx-value received">
+                            +{tx.receivedQty} {tx.receivedCurrency}
+                            {tx.receivedFiat && <span style={{ color: '#71717a', marginLeft: '6px' }}>(${tx.receivedFiat})</span>}
+                          </span>
+                        </div>
+                      )}
+                      {tx.sentQty && (
+                        <div className="mobile-tx-row">
+                          <span className="mobile-tx-label">Sent</span>
+                          <span className="mobile-tx-value sent">
+                            -{tx.sentQty} {tx.sentCurrency}
+                            {tx.sentFiat && <span style={{ color: '#71717a', marginLeft: '6px' }}>(${tx.sentFiat})</span>}
+                          </span>
+                        </div>
+                      )}
+                      {tx.feeAmount && (
+                        <div className="mobile-tx-row">
+                          <span className="mobile-tx-label">Fee</span>
+                          <span className="mobile-tx-value fee">
+                            {tx.feeAmount} {tx.feeCurrency}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="mobile-tx-notes">
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {tx.notes || '—'}
+                      </span>
+                      <a
+                        href={`https://explorer.injective.network/transaction/${tx.txHash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mobile-tx-link"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                          <polyline points="15 3 21 3 21 9" />
+                          <line x1="10" x2="21" y1="14" y2="3" />
+                        </svg>
+                      </a>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
         {/* Empty State */}
         {!loading && transactions.length === 0 && !error && (
-          <div style={styles.emptyState}>
-            <div style={styles.emptyIcon}>
+          <div style={styles.emptyState} className="responsive-empty-state">
+            <div style={styles.emptyIcon} className="responsive-empty-icon">
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#52525b" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <rect width="18" height="18" x="3" y="3" rx="2" />
                 <path d="M3 9h18" />
                 <path d="M9 21V9" />
               </svg>
             </div>
-            <h3 style={{ fontSize: '18px', fontWeight: '600', margin: '0 0 8px', color: '#fafafa' }}>
+            <h3 style={{ fontSize: '18px', fontWeight: '600', margin: '0 0 8px', color: '#fafafa' }} className="responsive-empty-title">
               No Transactions Yet
             </h3>
-            <p style={{ color: '#52525b', margin: 0, fontSize: '15px', maxWidth: '320px', marginInline: 'auto' }}>
+            <p style={{ color: '#52525b', margin: 0, fontSize: '15px', maxWidth: '320px', marginInline: 'auto' }} className="responsive-empty-text">
               Enter your Injective wallet address above to fetch and export your transaction history
             </p>
           </div>
         )}
 
         {/* Footer */}
-        <footer style={styles.footer}>
+        <footer style={styles.footer} className="responsive-footer">
           <p style={{ color: '#52525b', margin: '0 0 8px', fontSize: '14px' }}>
             Built for{' '}
             <a
@@ -2028,21 +2112,6 @@ export default function Home() {
         </footer>
       </div>
 
-      <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        input::placeholder { color: #3f3f46; }
-        input:focus { border-color: #4facfe; box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.15); }
-        button:hover:not(:disabled) { opacity: 0.9; }
-        button:active:not(:disabled) { transform: scale(0.98); }
-        tr:hover td { background: rgba(255, 255, 255, 0.02); }
-        a:hover { background: #3f3f46 !important; color: #fafafa !important; }
-        * { box-sizing: border-box; }
-        body { margin: 0; background: #09090b; }
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: #18181b; }
-        ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #52525b; }
-      `}</style>
     </div>
   );
 }
