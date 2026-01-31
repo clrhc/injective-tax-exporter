@@ -429,16 +429,19 @@ curl -s "http://localhost:3000/api/export?address={wallet}&chain={chainId}&limit
 - Stablecoin prices should be ~$1.00 (+/- 5%)
 - Major tokens should have prices, not empty
 
+**WALLET REQUIREMENTS:**
+- Test wallet MUST have swap transactions (not just transfers/fees)
+- Find wallets on block explorer by looking at DEX contract interactions
+
 **PRICE REQUIREMENTS:**
 - Target: 0% missing prices
-- If > 0% missing: Try a different test wallet with more common tokens
-- After trying 2-3 wallets, if still > 0% but < 10%: ACCEPTABLE, proceed
-- If > 10% missing prices: FAIL, do NOT commit this chain
+- If > 0% but <= 10% missing: ACCEPTABLE, proceed to commit
+- If > 10% missing prices: FAIL, do NOT commit this chain (DefiLlama doesn't support it well)
 
 **FAIL CONDITIONS - Do NOT commit if:**
 - txlist or tokentx API returns errors/403/404
-- No swaps detected (all transactions show as "fee")
-- More than 10% of prices are missing (try different wallets first)
+- No swaps detected (test wallet must have swaps!)
+- More than 10% of prices are missing
 - CSV has empty Received/Sent columns for swaps
 - Prices are clearly wrong (e.g., $0.00 or $999999)
 
