@@ -276,7 +276,7 @@ Test each one. If API works, implement and mark [x]. If no API, mark [!].
 - [ ] ENI
 - [ ] Eteria
 - [ ] Ethereal
-- [ ] EthereumClassic
+- [x] EthereumClassic - `etc.blockscout.com/api` - API works, limited DeFi activity on chain
 - [ ] Etherlink
 - [ ] exSat
 - [ ] Filecoin
