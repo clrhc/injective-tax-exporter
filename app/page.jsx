@@ -51,6 +51,14 @@ function getPriceSource(token, date) {
   return sessionPrices.sources?.[key] || null;
 }
 
+// Check if price has time difference warning (returns hours or null)
+function getPriceTimeDiff(token, date) {
+  const source = getPriceSource(token, date);
+  if (!source) return null;
+  const match = source.match(/\(price from (\d+\.?\d*)h away\)/);
+  return match ? parseFloat(match[1]) : null;
+}
+
 // ============================================================================
 // COST BASIS TRACKING (FIFO)
 // ============================================================================
@@ -1194,7 +1202,23 @@ export default function Home() {
         if (txs.length === 0) {
           hasMore = false;
         } else {
+          let reachedStartDate = false;
           for (const tx of txs) {
+            const txTimestamp = tx.blockTimestamp || tx.block_timestamp || tx.timestamp;
+            const txDate = txTimestamp ? new Date(txTimestamp).toISOString().split('T')[0] : null;
+
+            // Check if transaction is older than start date - stop fetching
+            if (txDate && startDate && txDate < startDate) {
+              reachedStartDate = true;
+              console.log(`Stopping fetch: tx date ${txDate} < start date ${startDate}`);
+              break;
+            }
+
+            // Skip transactions after end date (don't process but keep fetching)
+            if (txDate && endDate && txDate > endDate) {
+              continue;
+            }
+
             const txHash = tx.hash || tx.txHash || tx.id;
 
             // Skip duplicates
@@ -1209,13 +1233,20 @@ export default function Home() {
             allTxs.push(...parsed);
           }
 
+          // Stop fetching if we've reached transactions older than startDate
+          if (reachedStartDate) {
+            hasMore = false;
+          }
+
           skip += 100;
           if (txs.length < 100) hasMore = false;
 
           setProgress({
             current: allTxs.length,
             total: totalEstimate || allTxs.length,
-            status: `Processing ${allTxs.length.toLocaleString()} transactions...`,
+            status: startDate
+              ? `Fetching transactions from ${startDate}...`
+              : `Processing ${allTxs.length.toLocaleString()} transactions...`,
           });
 
           // Small delay to prevent rate limiting
@@ -1313,10 +1344,15 @@ export default function Home() {
           tx.missingPrice = (receivedQty > 0 && receivedPrice === null) ||
                             (sentQty > 0 && sentPrice === null);
 
-          // Track price sources for this transaction
+          // Track price sources and time diffs for this transaction
           const recvSource = tx.receivedCurrency ? getPriceSource(tx.receivedCurrency, tx.dateStr) : null;
           const sentSource = tx.sentCurrency ? getPriceSource(tx.sentCurrency, tx.dateStr) : null;
           tx.priceSource = recvSource || sentSource; // 'injective-dex' or 'pyth'
+
+          // Check for time difference warnings
+          const recvTimeDiff = tx.receivedCurrency ? getPriceTimeDiff(tx.receivedCurrency, tx.dateStr) : null;
+          const sentTimeDiff = tx.sentCurrency ? getPriceTimeDiff(tx.sentCurrency, tx.dateStr) : null;
+          tx.priceTimeDiff = recvTimeDiff || sentTimeDiff; // Hours away from actual trade
 
           // Add received tokens to cost basis (only if we have a price)
           if (receivedQty > 0 && tx.receivedCurrency && receivedPrice !== null) {
@@ -1353,12 +1389,21 @@ export default function Home() {
       const tagCounts = {};
       let totalPnl = 0;
       let missingPriceCount = 0;
+      let timeDiffCount = 0;
+      const timeDiffList = [];
       finalTxs.forEach(tx => {
         const tag = tx.tag || '';
         tagCounts[tag] = (tagCounts[tag] || 0) + 1;
 
         if (tx.missingPrice) {
           missingPriceCount++;
+        }
+        if (tx.priceTimeDiff && tx.priceTimeDiff > 1) {
+          timeDiffCount++;
+          const token = tx.receivedCurrency || tx.sentCurrency;
+          if (token) {
+            timeDiffList.push(`${token} on ${tx.dateStr} (${tx.priceTimeDiff}h away)`);
+          }
         }
         if (tx.pnl && tx.pnl !== '') {
           totalPnl += parseFloat(tx.pnl) || 0;
@@ -1374,7 +1419,9 @@ export default function Home() {
         uniqueTxs: seenHashes.size,
         totalPnl,
         missingPriceCount,
-        missingPrices: uniqueMissing
+        missingPrices: uniqueMissing,
+        timeDiffCount,
+        timeDiffList: [...new Set(timeDiffList)],
       });
       setShowSuccess(true);
 
@@ -1621,6 +1668,12 @@ export default function Home() {
                 <div style={styles.statLabel}>Missing Prices</div>
               </div>
             )}
+            {stats.timeDiffCount > 0 && (
+              <div style={{ ...styles.statCard, borderColor: '#3b82f6', background: 'rgba(59, 130, 246, 0.1)' }}>
+                <div style={{ ...styles.statValue, color: '#3b82f6' }}>{stats.timeDiffCount}</div>
+                <div style={styles.statLabel}>Approx Prices</div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1645,8 +1698,8 @@ export default function Home() {
                 </div>
                 <div style={{ color: '#a1a1aa', fontSize: '14px', lineHeight: '1.5' }}>
                   Could not find USD prices for {stats.missingPrices.length} token/date combinations.
-                  These transactions will have empty fiat values and P&L in the CSV export.
-                  You may need to manually add prices for accurate tax reporting.
+                  This usually means the token had no trades within 7 days of the transaction.
+                  These will have empty fiat values in the CSV - you may need to add prices manually.
                 </div>
                 <details style={{ marginTop: '8px' }}>
                   <summary style={{ color: '#f59e0b', cursor: 'pointer', fontSize: '13px' }}>
@@ -1658,6 +1711,46 @@ export default function Home() {
                     ))}
                     {stats.missingPrices.length > 50 && (
                       <div style={{ color: '#f59e0b' }}>...and {stats.missingPrices.length - 50} more</div>
+                    )}
+                  </div>
+                </details>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Warning for approximate prices (time diff) */}
+        {stats?.timeDiffList?.length > 0 && (
+          <div style={{
+            padding: '16px 20px',
+            background: 'rgba(59, 130, 246, 0.1)',
+            border: '1px solid rgba(59, 130, 246, 0.3)',
+            borderRadius: '12px',
+            marginBottom: '24px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14"/>
+              </svg>
+              <div>
+                <div style={{ fontWeight: '600', color: '#3b82f6', marginBottom: '4px' }}>
+                  Approximate Prices
+                </div>
+                <div style={{ color: '#a1a1aa', fontSize: '14px', lineHeight: '1.5' }}>
+                  {stats.timeDiffCount} transactions use prices from trades that occurred hours away from the actual transaction.
+                  These prices may not reflect the exact value at transaction time.
+                </div>
+                <details style={{ marginTop: '8px' }}>
+                  <summary style={{ color: '#3b82f6', cursor: 'pointer', fontSize: '13px' }}>
+                    Show approximate prices ({stats.timeDiffList.length})
+                  </summary>
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#71717a', maxHeight: '120px', overflow: 'auto' }}>
+                    {stats.timeDiffList.slice(0, 50).map((item, i) => (
+                      <div key={i}>{item}</div>
+                    ))}
+                    {stats.timeDiffList.length > 50 && (
+                      <div style={{ color: '#3b82f6' }}>...and {stats.timeDiffList.length - 50} more</div>
                     )}
                   </div>
                 </details>
@@ -1812,7 +1905,10 @@ export default function Home() {
                           fontVariantNumeric: 'tabular-nums',
                         }} title={tx.priceSource ? `Price from ${tx.priceSource}` : ''}>
                           {tx.receivedFiat ? `$${tx.receivedFiat}` : ''}
-                          {tx.receivedFiat && tx.priceSource === 'pyth' && (
+                          {tx.receivedFiat && tx.priceTimeDiff && (
+                            <span style={{ fontSize: '9px', color: '#f59e0b', marginLeft: '2px' }} title={`Price from ${tx.priceTimeDiff}h away`}>⏱{tx.priceTimeDiff}h</span>
+                          )}
+                          {tx.receivedFiat && !tx.priceTimeDiff && tx.priceSource?.includes('pyth') && (
                             <span style={{ fontSize: '9px', color: '#f59e0b', marginLeft: '2px' }} title="Cross-chain price (Pyth)">*</span>
                           )}
                         </td>
@@ -1836,7 +1932,10 @@ export default function Home() {
                           fontVariantNumeric: 'tabular-nums',
                         }} title={tx.priceSource ? `Price from ${tx.priceSource}` : ''}>
                           {tx.sentFiat ? `$${tx.sentFiat}` : ''}
-                          {tx.sentFiat && tx.priceSource === 'pyth' && (
+                          {tx.sentFiat && tx.priceTimeDiff && (
+                            <span style={{ fontSize: '9px', color: '#f59e0b', marginLeft: '2px' }} title={`Price from ${tx.priceTimeDiff}h away`}>⏱{tx.priceTimeDiff}h</span>
+                          )}
+                          {tx.sentFiat && !tx.priceTimeDiff && tx.priceSource?.includes('pyth') && (
                             <span style={{ fontSize: '9px', color: '#f59e0b', marginLeft: '2px' }} title="Cross-chain price (Pyth)">*</span>
                           )}
                         </td>
