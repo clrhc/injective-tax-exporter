@@ -248,7 +248,7 @@ Test each one. If API works, implement and mark [x]. If no API, mark [!].
 - [ ] Bitrock
 - [ ] Bittensor EVM
 - [ ] Bittorrent
-- [ ] BOB
+- [x] BOB - `explorer.gobob.xyz/api` - Tested with 0x00a94cb9edfe91268dc49cc18c2119bd1e716622 (20 swaps, LP tokens missing prices as expected)
 - [ ] Botanix
 - [ ] BounceBit
 - [ ] Capx Chain
