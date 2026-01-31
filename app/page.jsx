@@ -1,63 +1,75 @@
 'use client';
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 
 const EXPLORER_API = '/api/transactions';
+const TOKEN_LIST_URL = 'https://raw.githubusercontent.com/InjectiveLabs/injective-lists/master/json/tokens/mainnet.json';
 const ITEMS_PER_PAGE = 25;
 
-// Token metadata cache (fetched from API)
-let globalTokenCache = {};
+// Global token cache - persists across renders
+const tokenCache = { data: null, loading: false, loaded: false };
 
-// Format denom using fetched metadata or fallback logic
-const formatDenom = (denom, tokenMeta = {}) => {
+// Load tokens once globally (non-blocking)
+async function loadTokensGlobal() {
+  if (tokenCache.loaded || tokenCache.loading) return tokenCache.data || {};
+  tokenCache.loading = true;
+  try {
+    const res = await fetch(TOKEN_LIST_URL);
+    if (res.ok) {
+      const tokens = await res.json();
+      const map = {};
+      for (const t of tokens) {
+        if (t.denom) map[t.denom.toLowerCase()] = { symbol: t.symbol || t.name, decimals: t.decimals || 18 };
+        if (t.address) map[`peggy${t.address}`.toLowerCase()] = { symbol: t.symbol || t.name, decimals: t.decimals || 18 };
+      }
+      tokenCache.data = map;
+      tokenCache.loaded = true;
+      return map;
+    }
+  } catch (e) {}
+  tokenCache.loading = false;
+  return {};
+}
+
+// Format denom - uses cache, fast fallbacks
+const formatDenom = (denom) => {
   if (!denom) return 'INJ';
-  
-  const denomLower = denom.toLowerCase();
-  
-  // Check cache first
-  if (tokenMeta[denomLower]) {
-    return tokenMeta[denomLower].symbol;
-  }
-  if (globalTokenCache[denomLower]) {
-    return globalTokenCache[denomLower].symbol;
-  }
-  
-  // Native INJ
   if (denom === 'inj') return 'INJ';
   
-  // Peggy tokens (bridged from Ethereum)
+  const cached = tokenCache.data?.[denom.toLowerCase()];
+  if (cached) return cached.symbol;
+  
   if (denom.startsWith('peggy0x')) {
-    // Return shortened address if not in metadata
-    const addr = denom.replace('peggy', '');
-    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+    const addr = denom.slice(5);
+    // Common tokens hardcoded for speed
+    const quick = {
+      '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT',
+      '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'USDC',
+      '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': 'WBTC',
+      '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 'WETH',
+      '0x7d1afa7b718fb893db30a3abc0cfc608aacfebb0': 'MATIC',
+      '0x1f9840a85d5af5bf1d1762f925bdaddc4201f984': 'UNI',
+      '0x514910771af9ca656af840dff83e8264ecf986ca': 'LINK',
+    }[addr.toLowerCase()];
+    if (quick) return quick;
+    return `${addr.slice(0,6)}...${addr.slice(-4)}`;
   }
-  
-  // IBC tokens
-  if (denom.startsWith('ibc/')) {
-    return `IBC/${denom.slice(4, 10)}...`;
-  }
-  
-  // Factory tokens
-  if (denom.startsWith('factory/')) {
-    const parts = denom.split('/');
-    return parts[parts.length - 1].toUpperCase();
-  }
-  
-  return denom.length > 12 ? `${denom.slice(0, 10)}...` : denom.toUpperCase();
+  if (denom.startsWith('ibc/')) return `IBC/${denom.slice(4,10)}`;
+  if (denom.startsWith('factory/')) return denom.split('/').pop()?.toUpperCase() || denom;
+  return denom.length > 10 ? `${denom.slice(0,8)}...` : denom.toUpperCase();
 };
 
-// Get decimals from metadata or default
-const getDecimals = (denom, tokenMeta = {}) => {
-  if (!denom) return 18;
-  const denomLower = denom.toLowerCase();
-  if (tokenMeta[denomLower]) return tokenMeta[denomLower].decimals;
-  if (globalTokenCache[denomLower]) return globalTokenCache[denomLower].decimals;
-  if (denom === 'inj') return 18;
-  return 18; // Default
+const getDecimals = (denom) => {
+  if (!denom || denom === 'inj') return 18;
+  const cached = tokenCache.data?.[denom.toLowerCase()];
+  if (cached) return cached.decimals;
+  // Quick lookup for common tokens
+  if (denom.toLowerCase().includes('usdt') || denom.toLowerCase().includes('usdc')) return 6;
+  return 18;
 };
 
-const formatAmount = (amount, denom, tokenMeta = {}) => {
+const formatAmount = (amount, denom) => {
   if (!amount) return '';
-  const decimals = getDecimals(denom, tokenMeta);
+  const decimals = getDecimals(denom);
   const num = parseFloat(amount) / Math.pow(10, decimals);
   if (num === 0) return '0';
   if (Math.abs(num) < 0.000001) return num.toExponential(4);
@@ -66,8 +78,8 @@ const formatAmount = (amount, denom, tokenMeta = {}) => {
   return num.toFixed(4).replace(/\.?0+$/, '');
 };
 
-// Parse transaction into Awaken Tax format
-const parseTransaction = (tx, walletAddress, tokenMeta = {}) => {
+// Parse transaction - optimized
+const parseTransaction = (tx, walletAddress) => {
   const results = [];
   const date = new Date(tx.blockTimestamp || tx.block_timestamp || tx.timestamp);
   const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
@@ -75,46 +87,22 @@ const parseTransaction = (tx, walletAddress, tokenMeta = {}) => {
   const timeDisplay = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   const txHash = tx.hash || tx.txHash || tx.id || '';
   const fee = tx.gasFee?.amount?.[0] || tx.gas_fee?.amount?.[0];
-  const feeAmount = fee ? formatAmount(fee.amount, fee.denom, tokenMeta) : '';
-  const feeCurrency = fee ? formatDenom(fee.denom, tokenMeta) : '';
+  const feeAmount = fee ? formatAmount(fee.amount, fee.denom) : '';
+  const feeCurrency = fee ? formatDenom(fee.denom) : '';
   const messages = tx.messages || tx.data?.messages || [];
   
-  // Parse event logs
-  const logs = tx.logs || tx.rawLog || [];
-  const events = [];
-  try {
-    const parsed = typeof logs === 'string' ? JSON.parse(logs) : logs;
-    if (Array.isArray(parsed)) parsed.forEach(log => events.push(...(log.events || [])));
-  } catch(e) {}
-  
-  const findEventAmount = (eventType, attrKey) => {
-    for (const evt of events) {
-      if (evt.type === eventType) {
-        const attr = evt.attributes?.find(a => a.key === attrKey);
-        if (attr) return attr.value;
-      }
-    }
-    return null;
-  };
-  
-  const baseTx = { 
-    dateStr, dateDisplay, timeDisplay, txHash, 
-    feeAmount, feeCurrency,
-    asset: '', amount: '', pnl: '', paymentToken: '',
-    notes: '', tag: ''
-  };
+  const baseTx = { dateStr, dateDisplay, timeDisplay, txHash, feeAmount, feeCurrency, asset: '', amount: '', pnl: '', paymentToken: '', notes: '', tag: '' };
   
   for (const msg of messages) {
     const type = msg['@type'] || msg.type || '';
     const value = msg.value || msg;
     
-    // ============ BANK TRANSFERS ============
     if (type.includes('MsgSend') && !type.includes('MsgSendToEth')) {
       const fromAddr = value.from_address || value.fromAddress || '';
       const toAddr = value.to_address || value.toAddress || '';
       for (const coin of (value.amount || [])) {
-        const qty = formatAmount(coin.amount, coin.denom, tokenMeta);
-        const cur = formatDenom(coin.denom, tokenMeta);
+        const qty = formatAmount(coin.amount, coin.denom);
+        const cur = formatDenom(coin.denom);
         if (fromAddr === walletAddress) {
           results.push({ ...baseTx, asset: cur, amount: `-${qty}`, tag: 'transfer', notes: `Send to ${toAddr}` });
         } else if (toAddr === walletAddress) {
@@ -126,245 +114,108 @@ const parseTransaction = (tx, walletAddress, tokenMeta = {}) => {
       for (const input of (value.inputs || [])) {
         if (input.address === walletAddress) {
           for (const coin of (input.coins || [])) {
-            results.push({ ...baseTx, asset: formatDenom(coin.denom, tokenMeta), amount: `-${formatAmount(coin.amount, coin.denom, tokenMeta)}`, tag: 'transfer', notes: `MultiSend output` });
+            results.push({ ...baseTx, asset: formatDenom(coin.denom), amount: `-${formatAmount(coin.amount, coin.denom)}`, tag: 'transfer', notes: `MultiSend output` });
           }
         }
       }
       for (const output of (value.outputs || [])) {
         if (output.address === walletAddress) {
           for (const coin of (output.coins || [])) {
-            results.push({ ...baseTx, asset: formatDenom(coin.denom, tokenMeta), amount: formatAmount(coin.amount, coin.denom, tokenMeta), tag: 'transfer', notes: `MultiSend receive` });
+            results.push({ ...baseTx, asset: formatDenom(coin.denom), amount: formatAmount(coin.amount, coin.denom), tag: 'transfer', notes: `MultiSend receive` });
           }
         }
       }
     }
-    
-    // ============ STAKING ============
     else if (type.includes('MsgDelegate') && !type.includes('Undelegate') && !type.includes('Redelegate')) {
       const amt = value.amount;
-      const validator = value.validator_address || value.validatorAddress || '';
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: `-${formatAmount(amt.amount, amt.denom, tokenMeta)}`, tag: 'stake', notes: `Stake to ${validator}` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: `-${formatAmount(amt.amount, amt.denom)}`, tag: 'stake', notes: `Stake to ${value.validator_address || value.validatorAddress || ''}` });
     }
     else if (type.includes('MsgUndelegate')) {
       const amt = value.amount;
-      const validator = value.validator_address || value.validatorAddress || '';
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: formatAmount(amt.amount, amt.denom, tokenMeta), tag: 'unstake', notes: `Unstake from ${validator}` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: formatAmount(amt.amount, amt.denom), tag: 'unstake', notes: `Unstake from ${value.validator_address || value.validatorAddress || ''}` });
     }
     else if (type.includes('MsgBeginRedelegate')) {
       const amt = value.amount;
-      const src = value.validator_src_address || '';
-      const dst = value.validator_dst_address || '';
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: '0', tag: 'stake', notes: `Redelegate ${formatAmount(amt.amount, amt.denom, tokenMeta)} from ${src} to ${dst}` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: '0', tag: 'stake', notes: `Redelegate from ${value.validator_src_address || ''} to ${value.validator_dst_address || ''}` });
     }
     else if (type.includes('MsgWithdrawDelegatorReward')) {
-      const validator = value.validator_address || value.validatorAddress || '';
-      let rewardQty = '';
-      let rewardCur = 'INJ';
-      const rewardStr = findEventAmount('withdraw_rewards', 'amount') || findEventAmount('coin_received', 'amount');
-      if (rewardStr) {
-        const match = rewardStr.match(/^(\d+)(.+)$/);
-        if (match) { 
-          rewardQty = formatAmount(match[1], match[2], tokenMeta); 
-          rewardCur = formatDenom(match[2], tokenMeta); 
-        }
-      }
-      results.push({ ...baseTx, asset: rewardCur, amount: rewardQty, pnl: rewardQty, tag: 'reward', notes: `Claim staking rewards from ${validator}` });
+      results.push({ ...baseTx, asset: 'INJ', amount: '', pnl: '', tag: 'reward', notes: `Claim rewards from ${value.validator_address || value.validatorAddress || ''}` });
     }
     else if (type.includes('MsgWithdrawValidatorCommission')) {
-      let commQty = '';
-      const commStr = findEventAmount('withdraw_commission', 'amount') || findEventAmount('coin_received', 'amount');
-      if (commStr) {
-        const match = commStr.match(/^(\d+)(.+)$/);
-        if (match) commQty = formatAmount(match[1], match[2], tokenMeta);
-      }
-      results.push({ ...baseTx, asset: 'INJ', amount: commQty, pnl: commQty, tag: 'reward', notes: `Withdraw validator commission` });
+      results.push({ ...baseTx, asset: 'INJ', amount: '', pnl: '', tag: 'reward', notes: `Withdraw validator commission` });
     }
-    
-    // ============ IBC ============
     else if (type.includes('MsgTransfer')) {
       const token = value.token;
       if (token) {
         const isOut = value.sender === walletAddress;
-        const receiver = value.receiver || '';
-        const sender = value.sender || '';
-        const channel = value.source_channel || '';
-        const qty = formatAmount(token.amount, token.denom, tokenMeta);
-        const cur = formatDenom(token.denom, tokenMeta);
-        if (isOut) {
-          results.push({ ...baseTx, asset: cur, amount: `-${qty}`, tag: 'transfer', notes: `IBC send to ${receiver} via ${channel}` });
-        } else {
-          results.push({ ...baseTx, asset: cur, amount: qty, tag: 'transfer', notes: `IBC receive from ${sender} via ${channel}` });
-        }
+        const qty = formatAmount(token.amount, token.denom);
+        const cur = formatDenom(token.denom);
+        results.push({ ...baseTx, asset: cur, amount: isOut ? `-${qty}` : qty, tag: 'transfer', notes: `IBC ${isOut ? 'send to ' + (value.receiver || '') : 'receive'} via ${value.source_channel || ''}` });
       }
     }
-    
-    // ============ SPOT TRADING ============
     else if (type.includes('MsgCreateSpotLimitOrder') || type.includes('MsgCreateSpotMarketOrder')) {
-      const marketId = value.order?.market_id || value.order?.marketId || '';
-      const orderType = value.order?.order_type || '';
-      results.push({ ...baseTx, asset: '', amount: '', tag: 'swap', notes: `Spot ${orderType} order on ${marketId}` });
+      results.push({ ...baseTx, tag: 'swap', notes: `Spot order on ${value.order?.market_id || ''}` });
     }
-    else if (type.includes('MsgCancelSpotOrder')) {
-      const marketId = value.market_id || value.marketId || '';
-      results.push({ ...baseTx, asset: '', amount: '', tag: '', notes: `Cancel spot order on ${marketId}` });
+    else if (type.includes('MsgCancelSpotOrder') || type.includes('MsgBatchCancelSpotOrders')) {
+      results.push({ ...baseTx, tag: '', notes: `Cancel spot order` });
     }
-    else if (type.includes('MsgBatchCancelSpotOrders')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: '', notes: `Batch cancel spot orders` });
-    }
-    
-    // ============ DERIVATIVES ============
     else if (type.includes('MsgCreateDerivativeLimitOrder') || type.includes('MsgCreateDerivativeMarketOrder')) {
-      const marketId = value.order?.market_id || '';
-      const orderType = value.order?.order_type || '';
-      const margin = value.order?.margin;
-      let marginAmt = '';
-      if (margin) marginAmt = formatAmount(margin, 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7', tokenMeta);
-      results.push({ ...baseTx, asset: 'USDT', amount: marginAmt ? `-${marginAmt}` : '', paymentToken: 'USDT', tag: 'open_position', notes: `${orderType} position on ${marketId}` });
+      results.push({ ...baseTx, asset: 'USDT', tag: 'open_position', notes: `Derivative order on ${value.order?.market_id || ''}` });
     }
-    else if (type.includes('MsgCancelDerivativeOrder')) {
-      const marketId = value.market_id || '';
-      results.push({ ...baseTx, asset: '', amount: '', tag: 'close_position', notes: `Cancel derivative order on ${marketId}` });
-    }
-    else if (type.includes('MsgBatchCancelDerivativeOrders')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: 'close_position', notes: `Batch cancel derivative orders` });
-    }
-    else if (type.includes('MsgIncreasePositionMargin')) {
-      const marketId = value.market_id || '';
-      const amount = value.amount;
-      results.push({ ...baseTx, asset: 'USDT', amount: amount ? `-${formatAmount(amount, 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7', tokenMeta)}` : '', tag: 'open_position', notes: `Increase margin on ${marketId}` });
+    else if (type.includes('MsgCancelDerivativeOrder') || type.includes('MsgBatchCancelDerivativeOrders')) {
+      results.push({ ...baseTx, tag: 'close_position', notes: `Cancel derivative order` });
     }
     else if (type.includes('MsgLiquidatePosition')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: 'close_position', notes: `Position liquidated` });
+      results.push({ ...baseTx, tag: 'close_position', notes: `Position liquidated` });
     }
-    
-    // ============ BINARY OPTIONS ============
-    else if (type.includes('MsgCreateBinaryOptions')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: 'open_position', notes: `Binary options order` });
-    }
-    else if (type.includes('MsgCancelBinaryOptions')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: 'close_position', notes: `Cancel binary options order` });
-    }
-    
-    // ============ BATCH ORDERS ============
     else if (type.includes('MsgBatchUpdateOrders')) {
-      const spotCreates = value.spot_orders_to_create?.length || 0;
-      const spotCancels = value.spot_orders_to_cancel?.length || 0;
-      const derivCreates = value.derivative_orders_to_create?.length || 0;
-      const derivCancels = value.derivative_orders_to_cancel?.length || 0;
-      results.push({ ...baseTx, asset: '', amount: '', tag: 'swap', notes: `Batch: ${spotCreates} spot create, ${spotCancels} spot cancel, ${derivCreates} deriv create, ${derivCancels} deriv cancel` });
+      results.push({ ...baseTx, tag: 'swap', notes: `Batch update orders` });
     }
-    
-    // ============ SUBACCOUNT ============
     else if (type.includes('MsgDeposit') && !type.includes('gov')) {
       const amt = value.amount;
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: `-${formatAmount(amt.amount, amt.denom, tokenMeta)}`, tag: 'transfer', notes: `Deposit to trading subaccount` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: `-${formatAmount(amt.amount, amt.denom)}`, tag: 'transfer', notes: `Deposit to subaccount` });
     }
     else if (type.includes('MsgWithdraw') && !type.includes('Reward') && !type.includes('Commission')) {
       const amt = value.amount;
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: formatAmount(amt.amount, amt.denom, tokenMeta), tag: 'transfer', notes: `Withdraw from trading subaccount` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: formatAmount(amt.amount, amt.denom), tag: 'transfer', notes: `Withdraw from subaccount` });
     }
-    else if (type.includes('MsgSubaccountTransfer') || type.includes('MsgExternalTransfer')) {
-      const amt = value.amount;
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: '0', tag: 'transfer', notes: `Subaccount transfer ${formatAmount(amt.amount, amt.denom, tokenMeta)} ${formatDenom(amt.denom, tokenMeta)}` });
-    }
-    
-    // ============ SMART CONTRACTS ============
     else if (type.includes('MsgExecuteContract')) {
       const contract = value.contract || '';
       let action = 'execute';
-      try { 
-        const msgObj = typeof value.msg === 'string' ? JSON.parse(value.msg) : value.msg;
-        if (msgObj && typeof msgObj === 'object') {
-          action = Object.keys(msgObj)[0] || 'execute'; 
-        }
-      } catch(e) {}
+      try { const m = typeof value.msg === 'string' ? JSON.parse(value.msg) : value.msg; if (m) action = Object.keys(m)[0] || 'execute'; } catch(e) {}
       const funds = Array.isArray(value.funds) ? value.funds : [];
       if (funds.length > 0 && funds[0]) {
-        results.push({ ...baseTx, asset: formatDenom(funds[0].denom, tokenMeta), amount: `-${formatAmount(funds[0].amount, funds[0].denom, tokenMeta)}`, tag: 'contract_interaction', notes: `${action} on ${contract}` });
+        results.push({ ...baseTx, asset: formatDenom(funds[0].denom), amount: `-${formatAmount(funds[0].amount, funds[0].denom)}`, tag: 'contract_interaction', notes: `${action} on ${contract}` });
       } else {
-        results.push({ ...baseTx, asset: '', amount: '', tag: 'contract_interaction', notes: `${action} on ${contract}` });
+        results.push({ ...baseTx, tag: 'contract_interaction', notes: `${action} on ${contract}` });
       }
     }
-    else if (type.includes('MsgInstantiateContract')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: 'contract_interaction', notes: `Instantiate contract` });
-    }
-    else if (type.includes('MsgMigrateContract')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: 'contract_interaction', notes: `Migrate contract` });
-    }
-    
-    // ============ BRIDGE ============
     else if (type.includes('MsgSendToEth')) {
       const amt = value.amount;
-      const ethDest = value.eth_dest || '';
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: `-${formatAmount(amt.amount, amt.denom, tokenMeta)}`, tag: 'bridge_out', notes: `Bridge to Ethereum ${ethDest}` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: `-${formatAmount(amt.amount, amt.denom)}`, tag: 'bridge_out', notes: `Bridge to ${value.eth_dest || 'Ethereum'}` });
     }
-    else if (type.includes('MsgDepositClaim')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: 'bridge_in', notes: `Bridge deposit from Ethereum` });
-    }
-    
-    // ============ GOVERNANCE ============
     else if (type.includes('MsgVote')) {
-      const proposalId = value.proposal_id || value.proposalId || '';
-      const option = value.option || '';
-      results.push({ ...baseTx, asset: '', amount: '', tag: '', notes: `Vote ${option} on proposal ${proposalId}` });
+      results.push({ ...baseTx, tag: '', notes: `Vote ${value.option || ''} on proposal ${value.proposal_id || value.proposalId || ''}` });
     }
-    else if (type.includes('MsgSubmitProposal')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: '', notes: `Submit governance proposal` });
-    }
-    
-    // ============ INSURANCE ============
-    else if (type.includes('MsgCreateInsuranceFund')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: '', notes: `Create insurance fund` });
-    }
-    else if (type.includes('MsgUnderwrite')) {
-      const amt = value.deposit;
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: `-${formatAmount(amt.amount, amt.denom, tokenMeta)}`, tag: 'add_liquidity', notes: `Underwrite insurance` });
-    }
-    
-    // ============ AUCTION ============
-    else if (type.includes('MsgBid')) {
-      const amt = value.bid_amount;
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: `-${formatAmount(amt.amount, amt.denom, tokenMeta)}`, tag: '', notes: `Auction bid` });
-    }
-    
-    // ============ AUTHZ ============
-    else if (type.includes('MsgGrant')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: '', notes: `Grant authorization` });
-    }
-    else if (type.includes('MsgRevoke')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: '', notes: `Revoke authorization` });
-    }
-    else if (type.includes('MsgExec')) {
-      results.push({ ...baseTx, asset: '', amount: '', tag: '', notes: `Execute authorized message` });
+    else if (type.includes('Msg')) {
+      const shortType = type.split('.').pop()?.replace('Msg', '') || 'Unknown';
+      results.push({ ...baseTx, tag: '', notes: shortType });
     }
   }
   
-  // Fallback
   if (results.length === 0 && messages.length > 0) {
-    const shortType = (messages[0]['@type'] || '').split('.').pop().replace('Msg', '');
-    results.push({ ...baseTx, asset: '', amount: '', tag: '', notes: shortType || 'Unknown transaction' });
+    results.push({ ...baseTx, tag: '', notes: 'Unknown transaction' });
   }
   
   return results;
 };
 
-// Generate Awaken Tax CSV
 const generateCSV = (transactions) => {
   const headers = ['Date', 'Asset', 'Amount', 'Fee', 'P&L', 'Payment Token', 'ID', 'Notes', 'Tag', 'Transaction Hash'];
-  
   const rows = transactions.map((tx, idx) => [
-    tx.dateStr,
-    tx.asset,
-    tx.amount,
-    tx.feeAmount,
-    tx.pnl || '',
-    tx.paymentToken || tx.feeCurrency,
-    `TXN${String(idx + 1).padStart(5, '0')}`,
-    tx.notes,
-    tx.tag,
-    tx.txHash
+    tx.dateStr, tx.asset, tx.amount, tx.feeAmount, tx.pnl || '', tx.paymentToken || tx.feeCurrency,
+    `TXN${String(idx + 1).padStart(5, '0')}`, tx.notes, tx.tag, tx.txHash
   ]);
-  
   return [headers.join(','), ...rows.map(row => row.map(cell => {
     const str = (cell || '').toString();
     return str.includes(',') || str.includes('"') || str.includes('\n') ? `"${str.replace(/"/g, '""')}"` : str;
@@ -382,12 +233,9 @@ const TAG_CONFIG = {
   'contract_interaction': { bg: '#ec489920', color: '#f472b6', icon: '📄', label: 'Contract' },
   'bridge_out': { bg: '#6366f120', color: '#818cf8', icon: '🌉', label: 'Bridge Out' },
   'bridge_in': { bg: '#6366f120', color: '#818cf8', icon: '🌉', label: 'Bridge In' },
-  'add_liquidity': { bg: '#14b8a620', color: '#2dd4bf', icon: '💧', label: 'Add Liquidity' },
-  'remove_liquidity': { bg: '#14b8a620', color: '#2dd4bf', icon: '💧', label: 'Remove Liquidity' },
   '': { bg: '#6b728020', color: '#9ca3af', icon: '•', label: 'Other' },
 };
 
-// Loading Modal
 function LoadingModal({ isOpen, progress, onCancel }) {
   if (!isOpen) return null;
   return (
@@ -411,7 +259,6 @@ function LoadingModal({ isOpen, progress, onCancel }) {
   );
 }
 
-// Success Modal
 function SuccessModal({ isOpen, stats, onClose }) {
   if (!isOpen || !stats) return null;
   return (
@@ -420,8 +267,7 @@ function SuccessModal({ isOpen, stats, onClose }) {
       <div style={{ position: 'relative', background: 'linear-gradient(135deg, #1a1a2e, #16162a)', borderRadius: '24px', border: '1px solid rgba(34,197,94,0.3)', padding: '40px', maxWidth: '420px', width: '90%', textAlign: 'center' }}>
         <div style={{ width: '80px', height: '80px', margin: '0 auto 24px', background: 'linear-gradient(135deg, #22c55e, #16a34a)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '40px' }}>✓</div>
         <h3 style={{ margin: '0 0 8px', fontSize: '24px', fontWeight: 700, color: '#fff' }}>Export Ready!</h3>
-        <p style={{ margin: '0 0 16px', color: '#64748b' }}>{stats.total.toLocaleString()} transactions loaded</p>
-        <p style={{ margin: '0 0 24px', color: '#4ade80', fontSize: '14px' }}>✓ {stats.tokenCount} tokens identified</p>
+        <p style={{ margin: '0 0 24px', color: '#64748b' }}>{stats.total.toLocaleString()} transactions loaded</p>
         <button onClick={onClose} style={{ width: '100%', padding: '14px', background: 'linear-gradient(135deg, #22c55e, #16a34a)', border: 'none', borderRadius: '12px', color: '#fff', fontSize: '16px', fontWeight: 600, cursor: 'pointer' }}>View Transactions</button>
       </div>
     </div>
@@ -438,27 +284,12 @@ export default function Home() {
   const [currentPage, setCurrentPage] = useState(1);
   const [filter, setFilter] = useState('all');
   const [showSuccess, setShowSuccess] = useState(false);
-  const [tokenMeta, setTokenMeta] = useState({});
-  const [cancelRef] = useState({ cancelled: false });
+  const [tokensLoaded, setTokensLoaded] = useState(false);
+  const cancelRef = useRef(false);
 
-  // Fetch token metadata on mount
+  // Load tokens in background on mount (non-blocking)
   useEffect(() => {
-    async function loadTokens() {
-      try {
-        const res = await fetch(`${EXPLORER_API}/tokens?type=tokens`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.tokens) {
-            setTokenMeta(data.tokens);
-            globalTokenCache = data.tokens;
-            console.log(`Loaded ${Object.keys(data.tokens).length} token metadata`);
-          }
-        }
-      } catch (err) {
-        console.log('Token metadata fetch failed, using fallbacks');
-      }
-    }
-    loadTokens();
+    loadTokensGlobal().then(() => setTokensLoaded(true));
   }, []);
 
   const filteredTxs = useMemo(() => filter === 'all' ? transactions : transactions.filter(tx => tx.tag === filter), [transactions, filter]);
@@ -470,32 +301,15 @@ export default function Home() {
       setError('Please enter a valid Injective address (starts with inj1, 42 characters)');
       return;
     }
-    cancelRef.cancelled = false;
+    cancelRef.current = false;
     setLoading(true); setError(''); setTransactions([]); setCurrentPage(1); setFilter('all'); setShowSuccess(false);
-    setProgress({ current: 0, total: 0, status: 'Loading token metadata...' });
+    setProgress({ current: 0, total: 0, status: 'Connecting to Injective...' });
 
     try {
-      // Ensure we have token metadata
-      if (Object.keys(tokenMeta).length === 0) {
-        try {
-          const tokRes = await fetch(`${EXPLORER_API}/tokens?type=tokens`);
-          if (tokRes.ok) {
-            const tokData = await tokRes.json();
-            if (tokData.tokens) {
-              setTokenMeta(tokData.tokens);
-              globalTokenCache = tokData.tokens;
-            }
-          }
-        } catch(e) {}
-      }
-      
       const allTxs = [];
       let hasMore = true, skip = 0, batch = 0;
-      const uniqueAssets = new Set();
       
-      setProgress({ current: 0, total: 0, status: 'Connecting to Injective...' });
-      
-      while (hasMore && !cancelRef.cancelled) {
+      while (hasMore && !cancelRef.current) {
         batch++;
         setProgress(p => ({ ...p, status: `Loading batch ${batch}...` }));
         const response = await fetch(`${EXPLORER_API}/${address}?limit=100&skip=${skip}`);
@@ -505,31 +319,23 @@ export default function Home() {
         
         if (!txs.length) hasMore = false;
         else {
-          for (const tx of txs) {
-            const parsed = parseTransaction(tx, address, tokenMeta);
-            allTxs.push(...parsed);
-            parsed.forEach(p => { if (p.asset) uniqueAssets.add(p.asset); });
-          }
+          for (const tx of txs) allTxs.push(...parseTransaction(tx, address));
           skip += 100;
           if (txs.length < 100) hasMore = false;
           setProgress({ current: allTxs.length, total: data.paging?.total || allTxs.length, status: `Found ${allTxs.length.toLocaleString()} transactions...` });
-          await new Promise(r => setTimeout(r, 150));
+          await new Promise(r => setTimeout(r, 100)); // Reduced delay
         }
       }
       
-      if (cancelRef.cancelled) { setLoading(false); return; }
+      if (cancelRef.current) { setLoading(false); return; }
       
       setTransactions(allTxs);
-      
       const tagCounts = {};
-      allTxs.forEach(tx => { 
-        const tag = tx.tag || '';
-        tagCounts[tag] = (tagCounts[tag] || 0) + 1; 
-      });
-      setStats({ total: allTxs.length, tagCounts, tokenCount: uniqueAssets.size });
+      allTxs.forEach(tx => { tagCounts[tx.tag || ''] = (tagCounts[tx.tag || ''] || 0) + 1; });
+      setStats({ total: allTxs.length, tagCounts });
       setShowSuccess(true);
     } catch (err) { setError(err.message); } finally { setLoading(false); }
-  }, [address, cancelRef, tokenMeta]);
+  }, [address]);
 
   const downloadCSV = useCallback(() => {
     const blob = new Blob([generateCSV(transactions)], { type: 'text/csv' });
@@ -541,20 +347,18 @@ export default function Home() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #0f0f1a, #1a1a2e, #0f0f1a)', color: '#fff', fontFamily: 'system-ui, sans-serif' }}>
-      <LoadingModal isOpen={loading} progress={progress} onCancel={() => { cancelRef.cancelled = true; setLoading(false); }} />
+      <LoadingModal isOpen={loading} progress={progress} onCancel={() => { cancelRef.current = true; setLoading(false); }} />
       <SuccessModal isOpen={showSuccess} stats={stats} onClose={() => setShowSuccess(false)} />
       
       <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '40px 20px' }}>
-        {/* Header */}
         <header style={{ marginBottom: '40px', display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div style={{ width: '56px', height: '56px', background: 'linear-gradient(135deg, #3b82f6, #06b6d4)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '28px', boxShadow: '0 8px 32px rgba(59,130,246,0.3)' }}>◈</div>
           <div>
             <h1 style={{ margin: 0, fontSize: '28px', fontWeight: 700 }}>Injective Tax Exporter</h1>
-            <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: '14px' }}>Export transactions for Awaken Tax • {Object.keys(tokenMeta).length > 0 ? `${Object.keys(tokenMeta).length} tokens loaded` : 'Loading tokens...'}</p>
+            <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: '14px' }}>Export transactions for Awaken Tax {tokensLoaded && `• ${Object.keys(tokenCache.data || {}).length} tokens`}</p>
           </div>
         </header>
 
-        {/* Search */}
         <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: '20px', border: '1px solid rgba(255,255,255,0.06)', padding: '24px', marginBottom: '24px' }}>
           <h2 style={{ margin: '0 0 16px', fontSize: '16px', color: '#e2e8f0' }}>🔍 Wallet Lookup</h2>
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
@@ -569,9 +373,8 @@ export default function Home() {
           {error && <div style={{ marginTop: '16px', padding: '12px 16px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '10px', color: '#fca5a5' }}>⚠️ {error}</div>}
         </div>
 
-        {/* Stats */}
         {stats && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px', marginBottom: '24px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '24px' }}>
             <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: '16px', padding: '20px', textAlign: 'center' }}>
               <div style={{ fontSize: '32px', fontWeight: 700 }}>{stats.total.toLocaleString()}</div>
               <div style={{ fontSize: '13px', color: '#64748b' }}>Total Transactions</div>
@@ -580,14 +383,9 @@ export default function Home() {
               <div style={{ fontSize: '32px', fontWeight: 700, color: '#a78bfa' }}>{Object.keys(stats.tagCounts).length}</div>
               <div style={{ fontSize: '13px', color: '#64748b' }}>Transaction Types</div>
             </div>
-            <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: '16px', padding: '20px', textAlign: 'center' }}>
-              <div style={{ fontSize: '32px', fontWeight: 700, color: '#4ade80' }}>{stats.tokenCount}</div>
-              <div style={{ fontSize: '13px', color: '#64748b' }}>Unique Assets</div>
-            </div>
           </div>
         )}
 
-        {/* Filters */}
         {stats && (
           <div style={{ marginBottom: '24px' }}>
             <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '10px' }}>Filter by type:</div>
@@ -601,17 +399,14 @@ export default function Home() {
           </div>
         )}
 
-        {/* Download */}
         {transactions.length > 0 && (
           <div style={{ textAlign: 'center', marginBottom: '32px' }}>
             <button onClick={downloadCSV} style={{ padding: '16px 32px', background: 'linear-gradient(135deg, #22c55e, #16a34a)', border: 'none', borderRadius: '14px', color: '#fff', fontSize: '16px', fontWeight: 600, cursor: 'pointer', boxShadow: '0 8px 32px rgba(34,197,94,0.3)' }}>
               ⬇️ Download Awaken Tax CSV ({transactions.length} rows)
             </button>
-            <p style={{ marginTop: '12px', fontSize: '13px', color: '#64748b' }}>Format: Date, Asset, Amount, Fee, P&L, Payment Token, ID, Notes, Tag, Transaction Hash</p>
           </div>
         )}
 
-        {/* Table */}
         {filteredTxs.length > 0 && (
           <div style={{ background: 'rgba(255,255,255,0.02)', borderRadius: '20px', border: '1px solid rgba(255,255,255,0.06)', overflow: 'hidden' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 24px', borderBottom: '1px solid rgba(255,255,255,0.06)', flexWrap: 'wrap', gap: '16px' }}>
@@ -620,40 +415,35 @@ export default function Home() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <button onClick={() => setCurrentPage(1)} disabled={currentPage === 1} style={{ padding: '8px 12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: currentPage === 1 ? '#374151' : '#94a3b8', cursor: currentPage === 1 ? 'not-allowed' : 'pointer' }}>««</button>
                   <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} style={{ padding: '8px 12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: currentPage === 1 ? '#374151' : '#94a3b8', cursor: currentPage === 1 ? 'not-allowed' : 'pointer' }}>‹</button>
-                  <span style={{ padding: '0 12px', color: '#64748b' }}>Page {currentPage} of {totalPages}</span>
+                  <span style={{ padding: '0 12px', color: '#64748b' }}>{currentPage} / {totalPages}</span>
                   <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} style={{ padding: '8px 12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: currentPage === totalPages ? '#374151' : '#94a3b8', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer' }}>›</button>
                   <button onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages} style={{ padding: '8px 12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: currentPage === totalPages ? '#374151' : '#94a3b8', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer' }}>»»</button>
                 </div>
               )}
             </div>
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1000px' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '900px' }}>
                 <thead>
                   <tr style={{ background: 'rgba(0,0,0,0.2)' }}>
-                    <th style={{ padding: '14px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>Date</th>
-                    <th style={{ padding: '14px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>Asset</th>
-                    <th style={{ padding: '14px 16px', textAlign: 'right', fontSize: '12px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>Amount</th>
-                    <th style={{ padding: '14px 16px', textAlign: 'right', fontSize: '12px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>Fee</th>
-                    <th style={{ padding: '14px 16px', textAlign: 'right', fontSize: '12px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>P&L</th>
-                    <th style={{ padding: '14px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>Tag</th>
-                    <th style={{ padding: '14px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>Notes</th>
-                    <th style={{ padding: '14px 16px', textAlign: 'center', fontSize: '12px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>Tx</th>
+                    {['Date', 'Asset', 'Amount', 'Fee', 'P&L', 'Tag', 'Notes', 'Tx'].map(h => (
+                      <th key={h} style={{ padding: '14px 16px', textAlign: h === 'Amount' || h === 'Fee' || h === 'P&L' ? 'right' : h === 'Tx' ? 'center' : 'left', fontSize: '12px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>{h}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {paginatedTxs.map((tx, i) => {
                     const c = TAG_CONFIG[tx.tag] || TAG_CONFIG[''];
-                    const isPositive = tx.amount && !tx.amount.startsWith('-');
-                    const isNegative = tx.amount && tx.amount.startsWith('-');
+                    const isPos = tx.amount && !tx.amount.startsWith('-');
+                    const isNeg = tx.amount && tx.amount.startsWith('-');
                     return (
                       <tr key={`${tx.txHash}-${i}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                         <td style={{ padding: '14px 16px' }}><div style={{ fontWeight: 500 }}>{tx.dateDisplay}</div><div style={{ fontSize: '12px', color: '#64748b' }}>{tx.timeDisplay}</div></td>
                         <td style={{ padding: '14px 16px', fontWeight: 600 }}>{tx.asset || '—'}</td>
-                        <td style={{ padding: '14px 16px', textAlign: 'right', fontFamily: 'monospace', color: isPositive ? '#4ade80' : isNegative ? '#f87171' : '#64748b' }}>{tx.amount || '—'}</td>
+                        <td style={{ padding: '14px 16px', textAlign: 'right', fontFamily: 'monospace', color: isPos ? '#4ade80' : isNeg ? '#f87171' : '#64748b' }}>{tx.amount || '—'}</td>
                         <td style={{ padding: '14px 16px', textAlign: 'right', color: '#64748b', fontSize: '13px' }}>{tx.feeAmount ? `${tx.feeAmount} ${tx.feeCurrency}` : '—'}</td>
                         <td style={{ padding: '14px 16px', textAlign: 'right', fontFamily: 'monospace', color: tx.pnl ? '#4ade80' : '#64748b' }}>{tx.pnl || '—'}</td>
                         <td style={{ padding: '14px 16px' }}>{tx.tag ? <span style={{ padding: '6px 10px', borderRadius: '6px', fontSize: '12px', background: c.bg, color: c.color }}>{c.icon} {c.label}</span> : '—'}</td>
-                        <td style={{ padding: '14px 16px', color: '#94a3b8', maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={tx.notes}>{tx.notes}</td>
+                        <td style={{ padding: '14px 16px', color: '#94a3b8', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={tx.notes}>{tx.notes}</td>
                         <td style={{ padding: '14px 16px', textAlign: 'center' }}><a href={`https://explorer.injective.network/transaction/${tx.txHash}`} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '28px', height: '28px', background: 'rgba(59,130,246,0.1)', borderRadius: '6px', color: '#60a5fa', textDecoration: 'none' }}>↗</a></td>
                       </tr>
                     );
@@ -661,34 +451,20 @@ export default function Home() {
                 </tbody>
               </table>
             </div>
-            {totalPages > 1 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 24px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                <span style={{ color: '#64748b' }}>Showing {((currentPage - 1) * ITEMS_PER_PAGE) + 1} - {Math.min(currentPage * ITEMS_PER_PAGE, filteredTxs.length)} of {filteredTxs.length}</span>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} style={{ padding: '10px 16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: currentPage === 1 ? '#374151' : '#94a3b8', cursor: currentPage === 1 ? 'not-allowed' : 'pointer' }}>← Previous</button>
-                  <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} style={{ padding: '10px 16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', color: currentPage === totalPages ? '#374151' : '#94a3b8', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer' }}>Next →</button>
-                </div>
-              </div>
-            )}
           </div>
         )}
 
-        {/* Empty State */}
         {!loading && transactions.length === 0 && !error && (
           <div style={{ textAlign: 'center', padding: '60px 24px' }}>
             <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔎</div>
             <h3 style={{ fontSize: '20px', fontWeight: 600, margin: '0 0 8px' }}>Ready to Export</h3>
-            <p style={{ color: '#64748b', margin: '0 0 24px' }}>Enter your Injective wallet address to fetch transaction history</p>
-            <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: '12px' }}>
-              {['✓ Staking & Rewards', '✓ IBC Transfers', '✓ DEX Swaps', '✓ Derivatives', '✓ Smart Contracts'].map(f => <span key={f} style={{ padding: '8px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: '20px', fontSize: '13px', color: '#94a3b8' }}>{f}</span>)}
-            </div>
+            <p style={{ color: '#64748b', margin: 0 }}>Enter your Injective wallet address to fetch transaction history</p>
           </div>
         )}
 
-        {/* Footer */}
         <footer style={{ marginTop: '48px', paddingTop: '24px', borderTop: '1px solid rgba(255,255,255,0.06)', textAlign: 'center' }}>
-          <p style={{ color: '#64748b', margin: '0 0 8px' }}>Built for the <a href="https://awaken.tax" target="_blank" rel="noopener noreferrer" style={{ color: '#60a5fa', textDecoration: 'none' }}>Awaken Tax</a> bounty program</p>
-          <p style={{ fontSize: '12px', color: '#4b5563', margin: 0 }}>Token metadata from Injective Labs • Not financial advice</p>
+          <p style={{ color: '#64748b', margin: '0 0 8px' }}>Built for <a href="https://awaken.tax" target="_blank" rel="noopener noreferrer" style={{ color: '#60a5fa', textDecoration: 'none' }}>Awaken Tax</a></p>
+          <p style={{ fontSize: '12px', color: '#4b5563', margin: 0 }}>Token data from Injective Labs • Not financial advice</p>
         </footer>
       </div>
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
