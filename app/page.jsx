@@ -6,6 +6,11 @@ const PRICES_API = '/api/prices';
 const CHAINS_API = '/api/chains';
 const ITEMS_PER_PAGE = 25;
 
+// Token list URL and cache key - set to null, chains don't need external token lists
+// Token info comes from transaction data itself
+const TOKEN_LIST_URL = null;
+const TOKEN_CACHE_KEY = 'token_cache';
+
 // Default chain config (will be replaced when chains load)
 const DEFAULT_CONFIG = {
   id: 'celo',
