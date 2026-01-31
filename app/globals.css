@@ -107,6 +107,13 @@ tr:hover td {
   .responsive-stat-value {
     font-size: 24px !important;
   }
+  /* Hide desktop table, show mobile cards */
+  .responsive-table-wrapper {
+    display: none !important;
+  }
+  .responsive-mobile-cards {
+    display: block !important;
+  }
 }
 
 /* Mobile breakpoint */
@@ -275,14 +282,6 @@ tr:hover td {
   }
   .responsive-page-info {
     padding: 0 8px !important;
-  }
-  /* Hide desktop table on mobile */
-  .responsive-table-wrapper {
-    display: none !important;
-  }
-  /* Show mobile cards */
-  .responsive-mobile-cards {
-    display: block !important;
   }
   .responsive-empty-state {
     padding: 48px 20px !important;
