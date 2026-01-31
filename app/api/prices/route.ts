@@ -228,7 +228,8 @@ async function getChronosPrice(marketId: string, timestamp: number): Promise<num
 
     if (!response.ok) {
       // Fallback to trades API
-      return getTradesPrice(marketId, timestamp);
+      const tradesResult = await getTradesPrice(marketId, timestamp);
+      return tradesResult?.rawPrice ?? null;
     }
 
     const data = await response.json();
@@ -242,13 +243,15 @@ async function getChronosPrice(marketId: string, timestamp: number): Promise<num
 
       if (!dailyResponse.ok) {
         // Fallback to trades API
-        return getTradesPrice(marketId, timestamp);
+        const tradesResult = await getTradesPrice(marketId, timestamp);
+        return tradesResult?.rawPrice ?? null;
       }
 
       const dailyData = await dailyResponse.json();
       if (dailyData.s !== 'ok' || !dailyData.c?.length) {
         // Fallback to trades API
-        return getTradesPrice(marketId, timestamp);
+        const tradesResult = await getTradesPrice(marketId, timestamp);
+        return tradesResult?.rawPrice ?? null;
       }
 
       // Find closest day
@@ -279,7 +282,8 @@ async function getChronosPrice(marketId: string, timestamp: number): Promise<num
 
     // Only accept if within 1 hour, otherwise try trades API
     if (closestDiff > 3600) {
-      return getTradesPrice(marketId, timestamp);
+      const tradesResult = await getTradesPrice(marketId, timestamp);
+      return tradesResult?.rawPrice ?? null;
     }
 
     return data.c[closestIdx];
