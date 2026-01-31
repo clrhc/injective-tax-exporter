@@ -5,64 +5,29 @@ const EXPLORER_API = '/api/transactions';
 const PRICES_API = '/api/prices';
 const TOKEN_LIST_URL = 'https://raw.githubusercontent.com/InjectiveLabs/injective-lists/master/json/tokens/mainnet.json';
 const TOKEN_CACHE_KEY = 'inj_token_cache_v2';
-const PRICE_CACHE_KEY = 'inj_price_cache_v2'; // v2: Injective DEX + Pyth (removed CoinGecko)
 const ITEMS_PER_PAGE = 25;
 
 // ============================================================================
-// PRICE CACHE - For historical prices
+// PRICE STORAGE - In-memory only (no localStorage caching)
 // ============================================================================
-const priceCache = { data: {}, sources: {}, loaded: false };
-
-function loadPriceCache() {
-  if (priceCache.loaded) return;
-  if (typeof window !== 'undefined') {
-    try {
-      const cached = localStorage.getItem(PRICE_CACHE_KEY);
-      if (cached) {
-        const { data, sources, timestamp } = JSON.parse(cached);
-        // Use cache if less than 24 hours old
-        if (Date.now() - timestamp < 24 * 60 * 60 * 1000) {
-          priceCache.data = data || {};
-          priceCache.sources = sources || {};
-        }
-      }
-    } catch (e) { /* ignore */ }
-  }
-  priceCache.loaded = true;
-}
-
-function savePriceCache() {
-  try {
-    localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify({
-      data: priceCache.data,
-      sources: priceCache.sources,
-      timestamp: Date.now()
-    }));
-  } catch (e) { /* ignore */ }
-}
+let sessionPrices = { data: {}, sources: {} };
 
 // Fetch prices from API - returns { prices, sources, missing, warning }
 async function fetchPricesBatch(requests) {
-  const uncached = requests.filter(r => {
-    const key = `${r.token.toUpperCase()}-${r.date}`;
-    return priceCache.data[key] === undefined;
-  });
-
-  if (uncached.length === 0) return { missing: [], sources: {} };
+  if (requests.length === 0) return { missing: [], sources: {} };
 
   try {
     const response = await fetch(PRICES_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requests: uncached }),
+      body: JSON.stringify({ requests }),
     });
 
     if (response.ok) {
       const data = await response.json();
-      // Merge prices into cache (values can be number or null)
-      Object.assign(priceCache.data, data.prices || {});
-      // Merge sources into cache
-      Object.assign(priceCache.sources, data.sources || {});
+      // Store in session memory (values can be number or null)
+      Object.assign(sessionPrices.data, data.prices || {});
+      Object.assign(sessionPrices.sources, data.sources || {});
       return {
         missing: data.missing || [],
         sources: data.sources || {},
@@ -76,21 +41,14 @@ async function fetchPricesBatch(requests) {
 // Get price - returns number or null if not available
 function getPrice(token, date) {
   const key = `${token.toUpperCase()}-${date}`;
-  const price = priceCache.data[key];
-  // Return null if not found or explicitly null, otherwise the price
+  const price = sessionPrices.data[key];
   return price === undefined || price === null ? null : price;
 }
 
 // Get price source - returns 'injective-dex', 'pyth', or null
 function getPriceSource(token, date) {
   const key = `${token.toUpperCase()}-${date}`;
-  return priceCache.sources?.[key] || null;
-}
-
-// Check if price is missing
-function isPriceMissing(token, date) {
-  const key = `${token.toUpperCase()}-${date}`;
-  return priceCache.data[key] === null || priceCache.data[key] === undefined;
+  return sessionPrices.sources?.[key] || null;
 }
 
 // ============================================================================
@@ -1294,8 +1252,8 @@ export default function Home() {
       if (filteredTxs.length > 0) {
         setProgress({ current: filteredTxs.length, total: filteredTxs.length, status: 'Fetching historical prices...' });
 
-        // Load price cache
-        loadPriceCache();
+        // Reset session prices (no caching between fetches)
+        sessionPrices = { data: {}, sources: {} };
 
         // Calculate P&L using FIFO cost basis
         const costTracker = new CostBasisTracker();
@@ -1335,9 +1293,6 @@ export default function Home() {
           }
           setProgress(p => ({ ...p, status: `Fetching prices... ${Math.min(100, Math.round(((i + 10) / priceRequests.length) * 100))}%` }));
         }
-
-        // Save price cache
-        savePriceCache();
 
         // Process transactions: populate fiat values and calculate P&L
         for (const tx of filteredTxs) {
