@@ -201,6 +201,10 @@ Track progress here. Mark [x] when fully tested and working, [!] if no working A
 - [!] Palm - Returns 404
 - [!] Meter - Returns HTML, no JSON API
 - [!] Velas - Returns HTML, no JSON API
+- [!] Shiden - Returns 404
+- [!] Telos - Returns HTML, no JSON API
+- [!] Oasis - Returns HTML, no JSON API
+- [!] Callisto - Returns HTML, no JSON API
 
 #### DefiLlama EVM Chains To Add (NOT in exclusion list)
 Test each one. If API works, implement and mark [x]. If no API, mark [!].
@@ -210,13 +214,10 @@ Test each one. If API works, implement and mark [x]. If no API, mark [!].
 - [x] Fuse - `explorer.fuse.io/api` - Tested with 0x459dc0dcb82c7e3c791041f9cdb5f797b6459315 (11 swaps, 7.5% missing prices - LP tokens)
 - [x] Astar - `astar.blockscout.com/api` - Tested with 0x2412f8511ea0cc48a22b6e1926c51916e3fccae2 (84 swaps, 0% missing prices)
 - [ ] Evmos
-- [ ] Shiden
 - [ ] Milkomeda
 - [ ] Milkomeda A1
-- [ ] Oasis
 - [ ] Heco
 - [ ] RSK
-- [ ] Telos
 - [ ] Elastos
 - [ ] Cube
 - [ ] Syscoin
@@ -226,7 +227,6 @@ Test each one. If API works, implement and mark [x]. If no API, mark [!].
 - [ ] GodwokenV1
 - [ ] EnergyWeb
 - [ ] CLV
-- [ ] Callisto
 
 **Priority 2 - Other EVM chains:**
 - [ ] 0G
