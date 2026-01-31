@@ -51,6 +51,14 @@ function getPriceSource(token, date) {
   return sessionPrices.sources?.[key] || null;
 }
 
+// Check if price has time difference warning (returns hours or null)
+function getPriceTimeDiff(token, date) {
+  const source = getPriceSource(token, date);
+  if (!source) return null;
+  const match = source.match(/\(price from (\d+\.?\d*)h away\)/);
+  return match ? parseFloat(match[1]) : null;
+}
+
 // ============================================================================
 // COST BASIS TRACKING (FIFO)
 // ============================================================================
@@ -1313,10 +1321,15 @@ export default function Home() {
           tx.missingPrice = (receivedQty > 0 && receivedPrice === null) ||
                             (sentQty > 0 && sentPrice === null);
 
-          // Track price sources for this transaction
+          // Track price sources and time diffs for this transaction
           const recvSource = tx.receivedCurrency ? getPriceSource(tx.receivedCurrency, tx.dateStr) : null;
           const sentSource = tx.sentCurrency ? getPriceSource(tx.sentCurrency, tx.dateStr) : null;
           tx.priceSource = recvSource || sentSource; // 'injective-dex' or 'pyth'
+
+          // Check for time difference warnings
+          const recvTimeDiff = tx.receivedCurrency ? getPriceTimeDiff(tx.receivedCurrency, tx.dateStr) : null;
+          const sentTimeDiff = tx.sentCurrency ? getPriceTimeDiff(tx.sentCurrency, tx.dateStr) : null;
+          tx.priceTimeDiff = recvTimeDiff || sentTimeDiff; // Hours away from actual trade
 
           // Add received tokens to cost basis (only if we have a price)
           if (receivedQty > 0 && tx.receivedCurrency && receivedPrice !== null) {
@@ -1645,8 +1658,8 @@ export default function Home() {
                 </div>
                 <div style={{ color: '#a1a1aa', fontSize: '14px', lineHeight: '1.5' }}>
                   Could not find USD prices for {stats.missingPrices.length} token/date combinations.
-                  These transactions will have empty fiat values and P&L in the CSV export.
-                  You may need to manually add prices for accurate tax reporting.
+                  This usually means the token had no trades within 7 days of the transaction.
+                  These will have empty fiat values in the CSV - you may need to add prices manually.
                 </div>
                 <details style={{ marginTop: '8px' }}>
                   <summary style={{ color: '#f59e0b', cursor: 'pointer', fontSize: '13px' }}>
@@ -1812,7 +1825,10 @@ export default function Home() {
                           fontVariantNumeric: 'tabular-nums',
                         }} title={tx.priceSource ? `Price from ${tx.priceSource}` : ''}>
                           {tx.receivedFiat ? `$${tx.receivedFiat}` : ''}
-                          {tx.receivedFiat && tx.priceSource === 'pyth' && (
+                          {tx.receivedFiat && tx.priceTimeDiff && (
+                            <span style={{ fontSize: '9px', color: '#f59e0b', marginLeft: '2px' }} title={`Price from ${tx.priceTimeDiff}h away`}>⏱{tx.priceTimeDiff}h</span>
+                          )}
+                          {tx.receivedFiat && !tx.priceTimeDiff && tx.priceSource?.includes('pyth') && (
                             <span style={{ fontSize: '9px', color: '#f59e0b', marginLeft: '2px' }} title="Cross-chain price (Pyth)">*</span>
                           )}
                         </td>
@@ -1836,7 +1852,10 @@ export default function Home() {
                           fontVariantNumeric: 'tabular-nums',
                         }} title={tx.priceSource ? `Price from ${tx.priceSource}` : ''}>
                           {tx.sentFiat ? `$${tx.sentFiat}` : ''}
-                          {tx.sentFiat && tx.priceSource === 'pyth' && (
+                          {tx.sentFiat && tx.priceTimeDiff && (
+                            <span style={{ fontSize: '9px', color: '#f59e0b', marginLeft: '2px' }} title={`Price from ${tx.priceTimeDiff}h away`}>⏱{tx.priceTimeDiff}h</span>
+                          )}
+                          {tx.sentFiat && !tx.priceTimeDiff && tx.priceSource?.includes('pyth') && (
                             <span style={{ fontSize: '9px', color: '#f59e0b', marginLeft: '2px' }} title="Cross-chain price (Pyth)">*</span>
                           )}
                         </td>

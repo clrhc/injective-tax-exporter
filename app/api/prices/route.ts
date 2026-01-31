@@ -486,7 +486,7 @@ export async function POST(request: Request) {
         sources[key] = sourceDesc;
       } else {
         results[key] = null;
-        missing.push(`${symbol} on ${date || new Date(timestamp).toISOString()}`);
+        missing.push(`${symbol} on ${date || new Date(timestamp).toISOString().split('T')[0]} (no trades within 7 days)`);
       }
 
       // Small delay to prevent rate limiting
