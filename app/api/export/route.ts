@@ -146,8 +146,41 @@ function parseTransactionsWithTokens(
       }
     }
 
-    const hasIn = tokensIn.length > 0;
-    const hasOut = tokensOut.length > 0;
+    // Net out tokens that appear in both lists (wrap/unwrap operations)
+    // This prevents showing WETH->WETH when it's actually USDC->WETH with a wrap
+    const inBySymbol: Record<string, { amount: number; contractAddress?: string }> = {};
+    const outBySymbol: Record<string, { amount: number; contractAddress?: string }> = {};
+
+    for (const t of tokensIn) {
+      if (!inBySymbol[t.symbol]) inBySymbol[t.symbol] = { amount: 0, contractAddress: t.contractAddress };
+      inBySymbol[t.symbol].amount += t.amount;
+    }
+    for (const t of tokensOut) {
+      if (!outBySymbol[t.symbol]) outBySymbol[t.symbol] = { amount: 0, contractAddress: t.contractAddress };
+      outBySymbol[t.symbol].amount += t.amount;
+    }
+
+    // Calculate net amounts per token
+    const netTokensIn: { symbol: string; amount: number; contractAddress?: string }[] = [];
+    const netTokensOut: { symbol: string; amount: number; contractAddress?: string }[] = [];
+
+    const allSymbols = new Set([...Object.keys(inBySymbol), ...Object.keys(outBySymbol)]);
+    for (const symbol of allSymbols) {
+      const inAmt = inBySymbol[symbol]?.amount || 0;
+      const outAmt = outBySymbol[symbol]?.amount || 0;
+      const contractAddress = inBySymbol[symbol]?.contractAddress || outBySymbol[symbol]?.contractAddress;
+      const net = inAmt - outAmt;
+
+      if (net > 0.00000001) {
+        netTokensIn.push({ symbol, amount: net, contractAddress });
+      } else if (net < -0.00000001) {
+        netTokensOut.push({ symbol, amount: Math.abs(net), contractAddress });
+      }
+      // If net ≈ 0, the token cancels out (wrap/unwrap)
+    }
+
+    const hasIn = netTokensIn.length > 0;
+    const hasOut = netTokensOut.length > 0;
 
     let tag: string;
     if (hasIn && hasOut) {
@@ -164,8 +197,8 @@ function parseTransactionsWithTokens(
 
     // Create transaction records
     if (tag === 'swap') {
-      const sentToken = tokensOut[0];
-      const recvToken = tokensIn[0];
+      const sentToken = netTokensOut[0];
+      const recvToken = netTokensIn[0];
 
       results.push({
         ...baseTx,
@@ -182,8 +215,8 @@ function parseTransactionsWithTokens(
       });
 
       // Additional tokens
-      for (let i = 1; i < tokensOut.length; i++) {
-        const t = tokensOut[i];
+      for (let i = 1; i < netTokensOut.length; i++) {
+        const t = netTokensOut[i];
         results.push({
           ...baseTx,
           sentQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
@@ -193,8 +226,8 @@ function parseTransactionsWithTokens(
           notes: txNote,
         });
       }
-      for (let i = 1; i < tokensIn.length; i++) {
-        const t = tokensIn[i];
+      for (let i = 1; i < netTokensIn.length; i++) {
+        const t = netTokensIn[i];
         results.push({
           ...baseTx,
           receivedQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
@@ -205,7 +238,7 @@ function parseTransactionsWithTokens(
         });
       }
     } else if (tag === 'Transfer In') {
-      for (const t of tokensIn) {
+      for (const t of netTokensIn) {
         results.push({
           ...baseTx,
           receivedQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
@@ -216,7 +249,7 @@ function parseTransactionsWithTokens(
         });
       }
     } else if (tag === 'Transfer Out') {
-      for (const t of tokensOut) {
+      for (const t of netTokensOut) {
         results.push({
           ...baseTx,
           sentQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),

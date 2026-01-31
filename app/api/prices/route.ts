@@ -124,57 +124,59 @@ async function getCoinGeckoPrice(coinId: string, date: string): Promise<number |
   }
 }
 
-// Known token mappings with CoinGecko IDs and contract addresses
-const TOKEN_MAPPINGS: Record<string, { coingeckoId?: string; address?: string }> = {
-  'USDC': { coingeckoId: 'usd-coin' },
-  'USDT': { coingeckoId: 'tether' },
-  'WETH': { coingeckoId: 'weth' },
-  'CELO': { coingeckoId: 'celo' },
-  'CUSD': { coingeckoId: 'celo-dollar', address: '0x765DE816845861e75A25fCA122bb6898B8B1282a' },
-  'CEUR': { coingeckoId: 'celo-euro', address: '0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73' },
-  'CREAL': { coingeckoId: 'celo-brazilian-real', address: '0xe8537a3d056DA446677B9E9d6c5dB704EaAb4787' },
+// Celo-specific token addresses for DefiLlama lookups
+// These are native Celo stablecoins that need contract addresses
+const CELO_TOKEN_ADDRESSES: Record<string, string> = {
+  'CUSD': '0x765DE816845861e75A25fCA122bb6898B8B1282a',
+  'CEUR': '0xD8763CBa276a3738E6DE85b4b3bF5FDed6D6cA73',
+  'CREAL': '0xe8537a3d056DA446677B9E9d6c5dB704EaAb4787',
 };
 
-// Map DeFi receipt/debt tokens to their underlying tokens
-// These tokens are ~1:1 with underlying (plus accrued interest)
-function getUnderlyingToken(symbol: string): { symbol: string; coingeckoId?: string; address?: string } | null {
+// Normalize token symbol for Pyth lookup (strips common suffixes/prefixes)
+function normalizePythSymbol(symbol: string): string {
+  let s = symbol.toUpperCase();
+
+  // Strip common bridged token suffixes: .E (Aurora), .e, etc.
+  if (s.endsWith('.E')) s = s.slice(0, -2);
+
+  // Strip wrapped prefix for native tokens: WETH -> ETH, WBTC -> BTC, WNEAR -> NEAR
+  if (s.startsWith('W') && s.length > 1 && !['WAVES'].includes(s)) {
+    const unwrapped = s.slice(1);
+    // Only unwrap if the result looks like a known base token
+    if (['ETH', 'BTC', 'NEAR', 'AVAX', 'MATIC', 'FTM', 'BNB'].includes(unwrapped)) {
+      s = unwrapped;
+    }
+  }
+
+  return s;
+}
+
+// Map DeFi receipt/debt tokens to their underlying token symbol
+// These are edge cases where wrapped/receipt tokens need special handling
+function getUnderlyingSymbol(symbol: string): string | null {
   const upper = symbol.toUpperCase();
 
-  // Direct lookup for known tokens
-  if (TOKEN_MAPPINGS[upper]) {
-    return { symbol: upper, ...TOKEN_MAPPINGS[upper] };
-  }
-
-  // Aave receipt tokens (aCel*, aToken patterns)
-  // aCelUSDC -> USDC, aCelWETH -> WETH, aCelcUSD -> CUSD, etc.
+  // Celo Aave receipt tokens: aCelUSDC -> USDC, aCelWETH -> WETH, etc.
   if (upper.startsWith('ACEL')) {
-    const underlying = upper.slice(4); // Remove 'ACEL'
-    if (TOKEN_MAPPINGS[underlying]) {
-      return { symbol: underlying, ...TOKEN_MAPPINGS[underlying] };
-    }
-    return { symbol: underlying };
+    return upper.slice(4);
   }
 
-  // Aave variable debt tokens
+  // Celo Aave variable debt tokens: variableDebtCelWETH -> WETH
   if (upper.startsWith('VARIABLEDEBTCEL')) {
-    const underlying = upper.slice(15); // Remove 'VARIABLEDEBTCEL'
-    if (TOKEN_MAPPINGS[underlying]) {
-      return { symbol: underlying, ...TOKEN_MAPPINGS[underlying] };
-    }
-    return { symbol: underlying };
+    return upper.slice(15);
   }
 
-  // Moola tokens (mCELO, mCUSD, etc.)
+  // Moola tokens: mCELO -> CELO, mCUSD -> CUSD
   if (upper.startsWith('M') && upper.length > 1) {
     const underlying = upper.slice(1);
-    if (TOKEN_MAPPINGS[underlying]) {
-      return { symbol: underlying, ...TOKEN_MAPPINGS[underlying] };
+    if (['CELO', 'CUSD', 'CEUR', 'CREAL'].includes(underlying)) {
+      return underlying;
     }
   }
 
   // stCELO -> CELO (staked CELO)
   if (upper === 'STCELO') {
-    return { symbol: 'CELO', ...TOKEN_MAPPINGS['CELO'] };
+    return 'CELO';
   }
 
   return null;
@@ -195,57 +197,47 @@ async function getHistoricalPrice(
   const timestamp = timestampMs ||
     new Date(date + 'T12:00:00Z').getTime();
 
-  // 1. Try DefiLlama with token address
+  // 1. Try DefiLlama with token contract address (primary source)
   if (tokenAddress?.startsWith('0x')) {
     const llamaPrice = await getDefiLlamaPrice(config.defiLlamaId, tokenAddress, timestamp);
     if (llamaPrice) return llamaPrice;
   }
 
-  // 2. Try DefiLlama with native token address (if symbol matches)
-  if (upper === config.nativeToken.symbol.toUpperCase()) {
-    // For native tokens, use the wrapped version or well-known address
-    const wrappedAddress = `0x${'0'.repeat(40)}`; // Native tokens often use zero address
-    const llamaPrice = await getDefiLlamaPrice(config.defiLlamaId, wrappedAddress, timestamp);
+  // 2. Try DefiLlama with wrapped native token address
+  if (upper === config.nativeToken.symbol.toUpperCase() && config.nativeToken.wrappedAddress) {
+    const llamaPrice = await getDefiLlamaPrice(config.defiLlamaId, config.nativeToken.wrappedAddress, timestamp);
     if (llamaPrice) return llamaPrice;
   }
 
-  // 2.5. Try mapping receipt/debt tokens to underlying
-  const underlying = getUnderlyingToken(upper);
-  if (underlying) {
-    // Try DefiLlama with underlying's contract address
-    if (underlying.address) {
-      const llamaPrice = await getDefiLlamaPrice(config.defiLlamaId, underlying.address, timestamp);
+  // 3. For Celo stablecoins, try with known contract addresses
+  if (config.id === 'celo' && CELO_TOKEN_ADDRESSES[upper]) {
+    const llamaPrice = await getDefiLlamaPrice(config.defiLlamaId, CELO_TOKEN_ADDRESSES[upper], timestamp);
+    if (llamaPrice) return llamaPrice;
+  }
+
+  // 4. For DeFi receipt/debt tokens, get underlying and retry
+  const underlyingSymbol = getUnderlyingSymbol(upper);
+  if (underlyingSymbol) {
+    // Try Celo stablecoin address for underlying
+    if (config.id === 'celo' && CELO_TOKEN_ADDRESSES[underlyingSymbol]) {
+      const llamaPrice = await getDefiLlamaPrice(config.defiLlamaId, CELO_TOKEN_ADDRESSES[underlyingSymbol], timestamp);
       if (llamaPrice) return llamaPrice;
     }
-    // Try underlying with CoinGecko ID
-    if (underlying.coingeckoId) {
-      const cgPrice = await getCoinGeckoPrice(underlying.coingeckoId, date);
-      if (cgPrice !== null) {
-        return { price: cgPrice, source: 'coingecko' };
-      }
-    }
     // Try Pyth with underlying symbol
-    const pythPrice = await getPythPrice(underlying.symbol, date);
+    const pythPrice = await getPythPrice(underlyingSymbol, date);
     if (pythPrice !== null) {
       return { price: pythPrice, source: 'pyth' };
     }
   }
 
-  // 3. Try Pyth
-  const pythPrice = await getPythPrice(upper, date);
+  // 5. Try Pyth with normalized symbol (handles .E suffix, W prefix)
+  const normalizedSymbol = normalizePythSymbol(upper);
+  const pythPrice = await getPythPrice(normalizedSymbol, date);
   if (pythPrice !== null) {
     return { price: pythPrice, source: 'pyth' };
   }
 
-  // 4. Try CoinGecko if ID provided
-  if (coingeckoId) {
-    const cgPrice = await getCoinGeckoPrice(coingeckoId, date);
-    if (cgPrice !== null) {
-      return { price: cgPrice, source: 'coingecko' };
-    }
-  }
-
-  // 5. Try native token's coingecko ID
+  // 6. Try native token's coingecko ID as last resort
   if (upper === config.nativeToken.symbol.toUpperCase() && config.nativeToken.coingeckoId) {
     const cgPrice = await getCoinGeckoPrice(config.nativeToken.coingeckoId, date);
     if (cgPrice !== null) {

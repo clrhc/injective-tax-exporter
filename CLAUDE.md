@@ -200,7 +200,7 @@ Track progress here. Mark [x] when fully tested and working, [!] if no working A
 Test each one. If API works, implement and mark [x]. If no API, mark [!].
 
 **Priority 1 - Likely have BlockScout APIs:**
-- [ ] Aurora
+- [x] Aurora - `explorer.aurora.dev/api` - Tested with 0x88928ff265a144aef2c5e228d536d9e477a68cfc (50 swaps, 0% missing prices)
 - [ ] Moonbeam
 - [ ] Moonriver
 - [ ] Boba

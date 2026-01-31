@@ -404,9 +404,43 @@ function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress, nativeT
       }
     }
 
-    // Classify based on token movements
-    const hasIn = tokensIn.length > 0;
-    const hasOut = tokensOut.length > 0;
+    // Net out tokens that appear in both lists (wrap/unwrap operations)
+    // This prevents showing WETH->WETH when it's actually USDC->WETH with a wrap
+    const inBySymbol = {};
+    const outBySymbol = {};
+
+    for (const t of tokensIn) {
+      if (!inBySymbol[t.symbol]) inBySymbol[t.symbol] = { amount: 0, decimals: t.decimals, contractAddress: t.contractAddress };
+      inBySymbol[t.symbol].amount += t.amount;
+    }
+    for (const t of tokensOut) {
+      if (!outBySymbol[t.symbol]) outBySymbol[t.symbol] = { amount: 0, decimals: t.decimals, contractAddress: t.contractAddress };
+      outBySymbol[t.symbol].amount += t.amount;
+    }
+
+    // Calculate net amounts per token
+    const netTokensIn = [];
+    const netTokensOut = [];
+
+    const allSymbols = new Set([...Object.keys(inBySymbol), ...Object.keys(outBySymbol)]);
+    for (const symbol of allSymbols) {
+      const inAmt = inBySymbol[symbol]?.amount || 0;
+      const outAmt = outBySymbol[symbol]?.amount || 0;
+      const decimals = inBySymbol[symbol]?.decimals || outBySymbol[symbol]?.decimals || 18;
+      const contractAddress = inBySymbol[symbol]?.contractAddress || outBySymbol[symbol]?.contractAddress;
+      const net = inAmt - outAmt;
+
+      if (net > 0.00000001) {
+        netTokensIn.push({ symbol, amount: net, decimals, contractAddress });
+      } else if (net < -0.00000001) {
+        netTokensOut.push({ symbol, amount: Math.abs(net), decimals, contractAddress });
+      }
+      // If net ≈ 0, the token cancels out (wrap/unwrap)
+    }
+
+    // Classify based on NET token movements
+    const hasIn = netTokensIn.length > 0;
+    const hasOut = netTokensOut.length > 0;
 
     let tag;
     if (hasIn && hasOut) {
@@ -423,10 +457,9 @@ function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress, nativeT
 
     // Create transaction records
     if (tag === 'swap') {
-      // For swaps, create one record per token pair
-      // Simplification: take first token out and first token in
-      const sentToken = tokensOut[0];
-      const recvToken = tokensIn[0];
+      // For swaps, use NET token amounts (after canceling wrap/unwrap)
+      const sentToken = netTokensOut[0];
+      const recvToken = netTokensIn[0];
 
       results.push({
         ...baseTx,
@@ -445,8 +478,8 @@ function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress, nativeT
       });
 
       // If there are additional tokens, create separate records
-      for (let i = 1; i < tokensOut.length; i++) {
-        const t = tokensOut[i];
+      for (let i = 1; i < netTokensOut.length; i++) {
+        const t = netTokensOut[i];
         results.push({
           ...baseTx,
           sentQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
@@ -458,8 +491,8 @@ function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress, nativeT
           amount: `-${t.amount.toFixed(8).replace(/\.?0+$/, '')}`,
         });
       }
-      for (let i = 1; i < tokensIn.length; i++) {
-        const t = tokensIn[i];
+      for (let i = 1; i < netTokensIn.length; i++) {
+        const t = netTokensIn[i];
         results.push({
           ...baseTx,
           receivedQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
@@ -472,7 +505,7 @@ function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress, nativeT
         });
       }
     } else if (tag === 'Transfer In') {
-      for (const t of tokensIn) {
+      for (const t of netTokensIn) {
         results.push({
           ...baseTx,
           receivedQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
@@ -485,7 +518,7 @@ function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress, nativeT
         });
       }
     } else if (tag === 'Transfer Out') {
-      for (const t of tokensOut) {
+      for (const t of netTokensOut) {
         results.push({
           ...baseTx,
           sentQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
