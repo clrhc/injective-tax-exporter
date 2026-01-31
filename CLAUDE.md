@@ -379,12 +379,62 @@ curl -s "https://api.llama.fi/chains" | jq '.[].name' | head -50
 ```
 
 ### Test Requirements for Each Chain
-1. Find a wallet with 20-100 transactions including swaps
-2. Run: `curl "http://localhost:3000/api/transactions/{address}?limit=20"`
-3. Verify: Swaps show as "swap" with sent AND received tokens
-4. Verify: Token symbols and amounts are correct
-5. Verify: Prices fetch for most tokens
-6. Take screenshot of working UI as proof
+
+**Step 1: Find a test wallet**
+Find a wallet on the chain's block explorer that has:
+- At least 5-10 swap transactions
+- Some transfer in/out transactions
+- Recent activity (within last few months)
+
+**Step 2: Test API endpoints work**
+```bash
+# Test txlist returns data
+curl -s "https://{explorer}/api?module=account&action=txlist&address={wallet}&page=1&offset=5" | jq '.status'
+# Should return "1"
+
+# Test tokentx returns data
+curl -s "https://{explorer}/api?module=account&action=tokentx&address={wallet}&page=1&offset=5" | jq '.status'
+# Should return "1"
+```
+
+**Step 3: Test full export with CSV validation**
+```bash
+# Export with JSON to see stats
+curl -s "http://localhost:3000/api/export?address={wallet}&chain={chainId}&limit=50&format=json" | jq '.stats'
+
+# Verify:
+# - total > 0
+# - tagCounts.swap > 0 (MUST have swaps)
+# - missingPrices should be low (< 20% of total)
+```
+
+**Step 4: Validate CSV output makes sense**
+```bash
+# Get CSV and check first few swaps
+curl -s "http://localhost:3000/api/export?address={wallet}&chain={chainId}&limit=20" | head -10
+
+# Verify for swap rows:
+# - Received Quantity is NOT empty
+# - Received Currency is NOT empty
+# - Sent Quantity is NOT empty
+# - Sent Currency is NOT empty
+# - Received Fiat Amount has a price (not empty)
+# - Sent Fiat Amount has a price (not empty)
+# - Fee Amount and Fee Currency are populated
+# - Tag is "swap"
+```
+
+**Step 5: Sanity check prices**
+- Native token price should be reasonable (check CoinGecko)
+- Stablecoin prices should be ~$1.00 (+/- 5%)
+- Major tokens should have prices, not empty
+
+**FAIL CONDITIONS - Do NOT commit if:**
+- txlist or tokentx API returns errors/403/404
+- No swaps detected (all transactions show as "fee")
+- Most prices are missing (> 50%)
+- CSV has empty Received/Sent columns for swaps
+- Prices are clearly wrong (e.g., $0.00 or $999999)
 
 ### When Chain Complete
 1. Create new chain file: `chains/{chainname}.ts` (copy from `chains/celo.ts` as template)
