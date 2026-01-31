@@ -132,23 +132,25 @@ const CELO_TOKEN_ADDRESSES: Record<string, string> = {
   'CREAL': '0xe8537a3d056DA446677B9E9d6c5dB704EaAb4787',
 };
 
-// Normalize token symbol for Pyth lookup (strips common suffixes/prefixes)
-function normalizePythSymbol(symbol: string): string {
+// Get possible Pyth symbol variants to try (strips common suffixes/prefixes)
+function getPythSymbolVariants(symbol: string): string[] {
+  const variants: string[] = [];
   let s = symbol.toUpperCase();
+  variants.push(s);
 
   // Strip common bridged token suffixes: .E (Aurora), .e, etc.
-  if (s.endsWith('.E')) s = s.slice(0, -2);
-
-  // Strip wrapped prefix for native tokens: WETH -> ETH, WBTC -> BTC, WNEAR -> NEAR
-  if (s.startsWith('W') && s.length > 1 && !['WAVES'].includes(s)) {
-    const unwrapped = s.slice(1);
-    // Only unwrap if the result looks like a known base token
-    if (['ETH', 'BTC', 'NEAR', 'AVAX', 'MATIC', 'FTM', 'BNB'].includes(unwrapped)) {
-      s = unwrapped;
-    }
+  if (s.endsWith('.E')) {
+    s = s.slice(0, -2);
+    variants.push(s);
   }
 
-  return s;
+  // Try without W prefix (WETH -> ETH, WBTC -> BTC, etc.)
+  // Exclude known tokens that start with W but aren't wrapped (WAVES, WEMIX, etc.)
+  if (s.startsWith('W') && s.length > 2 && !['WAVES', 'WEMIX', 'WOO', 'WIN', 'WING'].includes(s)) {
+    variants.push(s.slice(1));
+  }
+
+  return [...new Set(variants)]; // dedupe
 }
 
 // Map DeFi receipt/debt tokens to their underlying token symbol
@@ -230,11 +232,13 @@ async function getHistoricalPrice(
     }
   }
 
-  // 5. Try Pyth with normalized symbol (handles .E suffix, W prefix)
-  const normalizedSymbol = normalizePythSymbol(upper);
-  const pythPrice = await getPythPrice(normalizedSymbol, date);
-  if (pythPrice !== null) {
-    return { price: pythPrice, source: 'pyth' };
+  // 5. Try Pyth with symbol variants (handles .E suffix, W prefix)
+  const symbolVariants = getPythSymbolVariants(upper);
+  for (const variant of symbolVariants) {
+    const pythPrice = await getPythPrice(variant, date);
+    if (pythPrice !== null) {
+      return { price: pythPrice, source: 'pyth' };
+    }
   }
 
   // 6. Try native token's coingecko ID as last resort
