@@ -1,10 +1,11 @@
 'use client';
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import config from '../chain.config';
 
 const EXPLORER_API = '/api/transactions';
 const PRICES_API = '/api/prices';
-const TOKEN_LIST_URL = 'https://raw.githubusercontent.com/InjectiveLabs/injective-lists/master/json/tokens/mainnet.json';
-const TOKEN_CACHE_KEY = 'inj_token_cache_v2';
+const TOKEN_LIST_URL = config.tokenListUrl;
+const TOKEN_CACHE_KEY = `${config.cacheKeyPrefix}_token_cache_v2`;
 const ITEMS_PER_PAGE = 25;
 
 // ============================================================================
@@ -39,21 +40,21 @@ async function fetchPricesBatch(requests) {
 }
 
 // Get price - returns number or null if not available
-function getPrice(token, date) {
-  const key = `${token.toUpperCase()}-${date}`;
+function getPrice(token, timestamp) {
+  const key = `${token.toUpperCase()}-${timestamp}`;
   const price = sessionPrices.data[key];
   return price === undefined || price === null ? null : price;
 }
 
-// Get price source - returns 'injective-dex', 'pyth', or null
-function getPriceSource(token, date) {
-  const key = `${token.toUpperCase()}-${date}`;
+// Get price source - returns 'defillama', 'pyth', 'coingecko', or null
+function getPriceSource(token, timestamp) {
+  const key = `${token.toUpperCase()}-${timestamp}`;
   return sessionPrices.sources?.[key] || null;
 }
 
 // Check if price has time difference warning (returns hours or null)
-function getPriceTimeDiff(token, date) {
-  const source = getPriceSource(token, date);
+function getPriceTimeDiff(token, timestamp) {
+  const source = getPriceSource(token, timestamp);
   if (!source) return null;
   const match = source.match(/\(price from (\d+\.?\d*)h away\)/);
   return match ? parseFloat(match[1]) : null;
@@ -132,6 +133,13 @@ async function loadTokensGlobal() {
   if (tokenCache.loaded) return tokenCache.data;
   if (tokenCache.loading) return tokenCache.loading;
 
+  // If no token list URL, just use common tokens from config
+  if (!TOKEN_LIST_URL) {
+    tokenCache.data = { ...COMMON_TOKENS };
+    tokenCache.loaded = true;
+    return tokenCache.data;
+  }
+
   // Try localStorage first
   if (typeof window !== 'undefined') {
     try {
@@ -153,11 +161,19 @@ async function loadTokensGlobal() {
 }
 
 async function fetchAndCacheTokens() {
+  // If no token list URL configured, just use common tokens
+  if (!TOKEN_LIST_URL) {
+    tokenCache.data = { ...COMMON_TOKENS };
+    tokenCache.loaded = true;
+    tokenCache.loading = null;
+    return tokenCache.data;
+  }
+
   try {
     const res = await fetch(TOKEN_LIST_URL);
     if (res.ok) {
       const tokens = await res.json();
-      const map = buildTokenMap(tokens);
+      const map = config.buildTokenMap ? config.buildTokenMap(tokens) : buildDefaultTokenMap(tokens);
       tokenCache.data = map;
       tokenCache.loaded = true;
       tokenCache.loading = null;
@@ -166,29 +182,32 @@ async function fetchAndCacheTokens() {
     }
   } catch (e) { /* ignore */ }
   tokenCache.loading = null;
-  return tokenCache.data || {};
+  return tokenCache.data || { ...COMMON_TOKENS };
 }
 
 function refreshTokensBackground() {
+  if (!TOKEN_LIST_URL) return;
+
   fetch(TOKEN_LIST_URL)
     .then(res => res.ok ? res.json() : null)
     .then(tokens => {
       if (!tokens) return;
-      const map = buildTokenMap(tokens);
+      const map = config.buildTokenMap ? config.buildTokenMap(tokens) : buildDefaultTokenMap(tokens);
       tokenCache.data = map;
       persistTokenCache(map);
     })
     .catch(() => {});
 }
 
-function buildTokenMap(tokens) {
+// Default token map builder for EVM chains (handles common formats)
+function buildDefaultTokenMap(tokens) {
   const map = {};
   for (const t of tokens) {
     const entry = { symbol: t.symbol || t.name || 'UNKNOWN', decimals: t.decimals ?? 18 };
-    if (t.denom) map[t.denom.toLowerCase()] = entry;
-    if (t.address) map[`peggy${t.address}`.toLowerCase()] = entry;
-    if (t.baseDenom) map[t.baseDenom.toLowerCase()] = entry;
-    if (t.cw20?.address) map[t.cw20.address.toLowerCase()] = entry;
+    // Standard EVM token list format
+    if (t.address) map[t.address.toLowerCase()] = entry;
+    // Also map by symbol for convenience
+    if (t.symbol) map[t.symbol.toLowerCase()] = entry;
   }
   return map;
 }
@@ -199,47 +218,11 @@ function persistTokenCache(map) {
   } catch (e) { /* ignore */ }
 }
 
-// Common tokens hardcoded for instant resolution
-const COMMON_TOKENS = {
-  'inj': { symbol: 'INJ', decimals: 18 },
-  'peggy0xdac17f958d2ee523a2206206994597c13d831ec7': { symbol: 'USDT', decimals: 6 },
-  'peggy0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': { symbol: 'USDC', decimals: 6 },
-  'peggy0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': { symbol: 'WBTC', decimals: 8 },
-  'peggy0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': { symbol: 'WETH', decimals: 18 },
-  'peggy0x7d1afa7b718fb893db30a3abc0cfc608aacfebb0': { symbol: 'MATIC', decimals: 18 },
-  'peggy0x1f9840a85d5af5bf1d1762f925bdaddc4201f984': { symbol: 'UNI', decimals: 18 },
-  'peggy0x514910771af9ca656af840dff83e8264ecf986ca': { symbol: 'LINK', decimals: 18 },
-  'peggy0x6b175474e89094c44da98b954eedeac495271d0f': { symbol: 'DAI', decimals: 18 },
-};
+// Common tokens from chain config
+const COMMON_TOKENS = config.commonTokens;
 
-function getTokenInfo(denom) {
-  if (!denom) return { symbol: 'INJ', decimals: 18 };
-  const key = denom.toLowerCase();
-
-  // Check common tokens first
-  if (COMMON_TOKENS[key]) return COMMON_TOKENS[key];
-
-  // Check cache
-  const cached = tokenCache.data?.[key];
-  if (cached) return cached;
-
-  // Parse denom string
-  if (denom.startsWith('peggy0x')) {
-    const addr = denom.slice(5);
-    return { symbol: `${addr.slice(0, 6)}...${addr.slice(-4)}`, decimals: 18 };
-  }
-  if (denom.startsWith('ibc/')) {
-    return { symbol: `IBC/${denom.slice(4, 10)}`, decimals: 6 };
-  }
-  if (denom.startsWith('factory/')) {
-    const parts = denom.split('/');
-    return { symbol: (parts[parts.length - 1] || 'TOKEN').toUpperCase(), decimals: 18 };
-  }
-  if (denom.startsWith('share')) {
-    return { symbol: 'LP-TOKEN', decimals: 18 };
-  }
-
-  return { symbol: denom.length > 12 ? `${denom.slice(0, 8)}...` : denom.toUpperCase(), decimals: 18 };
+function getTokenInfo(addressOrSymbol) {
+  return config.getTokenInfo(addressOrSymbol, tokenCache.data);
 }
 
 function formatAmount(amount, denom) {
@@ -255,407 +238,255 @@ function formatAmount(amount, denom) {
 }
 
 // ============================================================================
-// TRANSACTION PARSING - Comprehensive handler for all Injective message types
+// TRANSACTION PARSING - Generic EVM transaction handler
 // ============================================================================
 
-// Helper: Parse coin amount from event attribute value like "1000000inj" or "500000peggy0x..."
-function parseCoinFromString(coinStr) {
-  if (!coinStr) return null;
-  const match = coinStr.match(/^(\d+)(.+)$/);
-  if (!match) return null;
-  const rawAmount = match[1];
-  const denom = match[2];
-  const { symbol, decimals } = getTokenInfo(denom);
-  const amount = parseFloat(rawAmount) / Math.pow(10, decimals);
-  return { amount, symbol, denom, rawAmount };
-}
-
-// Helper: Extract all coin movements from transaction events (deduplicated by denom)
-function extractCoinMovements(tx, walletAddress) {
-  const received = {}; // { denom: { amount, symbol, denom, rawAmount } }
-  const spent = {};    // { denom: { amount, symbol, denom, rawAmount } }
-  const events = tx.logs?.[0]?.events || tx.events || [];
+// Classify transaction based on function name
+// Parse all transactions using token transfer data for accurate classification
+// tokenTransfersByHash: Map of txHash -> array of token transfers for that tx
+function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress) {
+  const results = [];
   const walletLower = walletAddress.toLowerCase();
 
-  for (const event of events) {
-    const attrs = event.attributes || [];
-    const getAttr = (key) => attrs.find(a => a.key === key)?.value;
-
-    // Only process coin_received and coin_spent (skip transfer to avoid dupes)
-    if (event.type === 'coin_received') {
-      const receiver = getAttr('receiver')?.toLowerCase();
-      const amount = getAttr('amount');
-      if (receiver?.includes(walletLower.slice(0, 10)) && amount) {
-        const coins = amount.split(',');
-        for (const c of coins) {
-          const parsed = parseCoinFromString(c.trim());
-          if (parsed) {
-            // Aggregate by denom
-            if (received[parsed.denom]) {
-              received[parsed.denom].amount += parsed.amount;
-            } else {
-              received[parsed.denom] = { ...parsed };
-            }
-          }
-        }
-      }
-    }
-
-    if (event.type === 'coin_spent') {
-      const spender = getAttr('spender')?.toLowerCase();
-      const amount = getAttr('amount');
-      if (spender?.includes(walletLower.slice(0, 10)) && amount) {
-        const coins = amount.split(',');
-        for (const c of coins) {
-          const parsed = parseCoinFromString(c.trim());
-          if (parsed) {
-            // Aggregate by denom
-            if (spent[parsed.denom]) {
-              spent[parsed.denom].amount += parsed.amount;
-            } else {
-              spent[parsed.denom] = { ...parsed };
-            }
-          }
-        }
-      }
+  // Build set of failed transaction hashes (to exclude their token transfers)
+  const failedTxHashes = new Set();
+  for (const tx of txs) {
+    const isFailed = tx.isError === '1' || tx.txreceipt_status === '0';
+    if (isFailed) {
+      const hash = (tx.hash || tx.txHash || '').toLowerCase();
+      if (hash) failedTxHashes.add(hash);
     }
   }
 
-  // Convert to arrays
-  return {
-    received: Object.values(received),
-    spent: Object.values(spent)
-  };
-}
-
-// Helper: Get human-readable note for a transaction
-function getTransactionNote(tx) {
-  const messages = tx.messages || tx.data?.messages || tx.tx?.body?.messages || [];
-  const msg = messages[0];
-  if (!msg) return 'Transaction';
-
-  const type = msg['@type'] || msg.type || '';
-  const typeShort = type.split('.').pop().replace('Msg', '');
-
-  // For contract executions, extract the action name
-  if (typeShort === 'ExecuteContract' || typeShort === 'ExecuteContractCompat') {
-    try {
-      const msgData = typeof msg.msg === 'string' ? JSON.parse(msg.msg) : msg.msg;
-      if (msgData) {
-        const action = Object.keys(msgData)[0] || 'execute';
-        return action;
-      }
-    } catch { /* ignore */ }
-    return 'contract';
+  // Group token transfers by transaction hash (excluding failed txs)
+  const tokensByHash = {};
+  for (const tt of tokenTransfers) {
+    const hash = (tt.hash || tt.transactionHash || '').toLowerCase();
+    if (!hash) continue;
+    // Skip token transfers from failed transactions - they didn't actually happen
+    if (failedTxHashes.has(hash)) continue;
+    if (!tokensByHash[hash]) tokensByHash[hash] = [];
+    tokensByHash[hash].push(tt);
   }
 
-  return typeShort || 'Transaction';
-}
+  // Process each transaction
+  for (const tx of txs) {
+    const txHash = (tx.hash || tx.txHash || '').toLowerCase();
+    const isFailed = tx.isError === '1' || tx.txreceipt_status === '0';
 
-function parseTransaction(tx, walletAddress, includeFailedForGas = false) {
-  // Check if transaction failed
-  const isFailed = (tx.code && tx.code !== 0) || (tx.txCode && tx.txCode !== 0) || tx.errorLog || tx.error_log;
+    // Parse timestamp
+    const timestamp = tx.timeStamp ? parseInt(tx.timeStamp) * 1000 : Date.now();
+    const date = new Date(timestamp);
+    if (isNaN(date.getTime())) continue;
 
-  // Skip failed transactions unless we're including them for gas deduction
-  if (isFailed && !includeFailedForGas) return [];
+    const dateFormatted = `${String(date.getUTCMonth() + 1).padStart(2, '0')}/${String(date.getUTCDate()).padStart(2, '0')}/${date.getUTCFullYear()} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}:${String(date.getUTCSeconds()).padStart(2, '0')}`;
+    const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
-  const results = [];
-  const timestamp = tx.blockTimestamp || tx.block_timestamp || tx.timestamp || tx.time;
-  const date = new Date(timestamp);
+    // Parse gas fee
+    const gasUsed = tx.gasUsed ? parseFloat(tx.gasUsed) : 0;
+    const gasPrice = tx.gasPrice ? parseFloat(tx.gasPrice) : 0;
+    const feeRaw = (gasUsed * gasPrice) / 1e18;
+    const feeAmount = feeRaw > 0 ? feeRaw.toFixed(8).replace(/\.?0+$/, '') : '';
+    const feeCurrency = config.nativeToken.symbol;
 
-  if (isNaN(date.getTime())) return []; // Invalid date
+    // Check if wallet initiated this tx (for gas fee attribution)
+    const from = (tx.from || '').toLowerCase();
+    const to = (tx.to || '').toLowerCase();
+    const walletInitiated = from === walletLower;
 
-  // Awaken Tax date format: MM/DD/YYYY HH:MM:SS in UTC
-  const dateFormatted = `${String(date.getUTCMonth() + 1).padStart(2, '0')}/${String(date.getUTCDate()).padStart(2, '0')}/${date.getUTCFullYear()} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}:${String(date.getUTCSeconds()).padStart(2, '0')}`;
+    // Parse native value transfer
+    const nativeValue = tx.value ? parseFloat(tx.value) / 1e18 : 0;
 
-  // Internal date for sorting/filtering
-  const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  const dateDisplay = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  const timeDisplay = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-  const txHash = tx.hash || tx.txHash || tx.id || '';
+    // Get function name for notes
+    const functionName = tx.functionName || tx.input?.slice(0, 10) || '';
+    const txNote = functionName.split('(')[0] || 'Transaction';
 
-  // Parse fee
-  const feeData = tx.gasFee?.amount?.[0] || tx.gas_fee?.amount?.[0] || tx.fee?.amount?.[0];
-  const feeRaw = feeData ? parseFloat(feeData.amount) / Math.pow(10, getTokenInfo(feeData.denom).decimals) : 0;
-  const feeAmount = feeRaw > 0 ? feeRaw.toFixed(8).replace(/\.?0+$/, '') : '';
-  const feeCurrency = feeData ? getTokenInfo(feeData.denom).symbol : '';
+    // Base tx object
+    const baseTx = {
+      dateStr,
+      dateFormatted,
+      timestamp,
+      txHash,
+      feeAmount: '',
+      feeCurrency: '',
+      feeRaw,
+      receivedQty: '',
+      receivedCurrency: '',
+      receivedFiat: '',
+      sentQty: '',
+      sentCurrency: '',
+      sentFiat: '',
+      notes: txNote,
+      tag: '',
+      isFailed,
+      asset: '',
+      amount: '',
+      pnl: '',
+      pnlDisplay: '',
+    };
 
-  // Extract coin movements from events (deduplicated)
-  const movements = extractCoinMovements(tx, walletAddress);
-
-  // Get transaction note from message type/action
-  const txNote = getTransactionNote(tx);
-
-  // Base transaction object for Awaken Tax format
-  const baseTx = {
-    dateStr,
-    dateFormatted,
-    dateDisplay,
-    timeDisplay,
-    txHash,
-    feeAmount: '',
-    feeCurrency: '',
-    feeRaw,
-    // Awaken format: separate sent/received columns (no negative numbers!)
-    receivedQty: '',
-    receivedCurrency: '',
-    receivedFiat: '',
-    sentQty: '',
-    sentCurrency: '',
-    sentFiat: '',
-    notes: txNote,
-    tag: '',
-    isFailed: isFailed,
-    // For UI display (legacy)
-    asset: '',
-    amount: '',
-    pnl: '',
-    pnlDisplay: '',
-  };
-
-  // For failed transactions, just record the gas fee as a fee
-  if (isFailed) {
-    if (feeRaw > 0) {
-      return [{
-        ...baseTx,
-        sentQty: feeAmount,
-        sentCurrency: feeCurrency || 'INJ',
-        feeAmount,
-        feeCurrency: feeCurrency || 'INJ',
-        tag: 'fee',
-        notes: `Failed: ${txNote}`,
-        // Legacy UI fields
-        asset: feeCurrency || 'INJ',
-        amount: `-${feeAmount}`,
-      }];
-    }
-    return [];
-  }
-
-  // Determine transaction type based on message type and token flows
-  const hasSpent = movements.spent.length > 0;
-  const hasReceived = movements.received.length > 0;
-
-  // Try to classify based on message type
-  const messages = tx.messages || tx.data?.messages || tx.tx?.body?.messages || [];
-  const msgType = messages[0]?.['@type']?.split('.').pop() || messages[0]?.type?.split('.').pop() || '';
-
-  // Classify the transaction - returns Awaken Tax compatible tag
-  const classifyTransaction = () => {
-    const typeLower = msgType.toLowerCase();
-    const noteLower = txNote.toLowerCase();
-
-    // Staking operations
-    if (typeLower.includes('delegate') && !typeLower.includes('undelegate')) {
-      return 'Staking Deposit';
-    }
-    if (typeLower.includes('undelegate')) {
-      return 'Staking Return';
-    }
-    if (typeLower.includes('withdrawdelegatorreward') || typeLower.includes('withdrawvalidatorcommission')) {
-      return 'Staking Claim';
-    }
-
-    // IBC / Bridge
-    if (typeLower.includes('transfer') && typeLower.includes('ibc')) {
-      return hasSpent ? 'Transfer Out' : 'Transfer In';
-    }
-    if (typeLower.includes('sendtoeth') || typeLower.includes('bridge')) {
-      return 'Transfer Out';
-    }
-
-    // Governance
-    if (typeLower.includes('vote') || typeLower.includes('proposal')) {
-      return ''; // Just a fee transaction
-    }
-
-    // Contract execution - try to identify swap/LP actions
-    if (typeLower.includes('executecontract')) {
-      if (noteLower.includes('swap') || noteLower.includes('execute_swap')) {
-        return 'swap';
+    // For failed transactions, just record gas fee
+    if (isFailed) {
+      if (feeRaw > 0 && walletInitiated) {
+        results.push({
+          ...baseTx,
+          // Fee only - don't put in sent column
+          feeAmount,
+          feeCurrency,
+          tag: 'fee',
+          notes: `Failed: ${txNote}`,
+          asset: feeCurrency,
+          amount: `-${feeAmount}`,
+        });
       }
-      if (noteLower.includes('provide_liquidity') || noteLower.includes('add_liquidity')) {
-        return 'Add Liquidity';
+      continue;
+    }
+
+    // Get token transfers for this tx
+    const ttList = tokensByHash[txHash] || [];
+
+    // Separate tokens in vs out
+    const tokensIn = [];  // Received by wallet
+    const tokensOut = []; // Sent from wallet
+
+    for (const tt of ttList) {
+      const ttFrom = (tt.from || '').toLowerCase();
+      const ttTo = (tt.to || '').toLowerCase();
+      const decimals = parseInt(tt.tokenDecimal || tt.decimals || '18');
+      const rawValue = tt.value || '0';
+      const amount = parseFloat(rawValue) / Math.pow(10, decimals);
+      const symbol = tt.tokenSymbol || tt.symbol || `${tt.contractAddress?.slice(0, 6)}...`;
+
+      if (ttTo === walletLower && amount > 0) {
+        tokensIn.push({ symbol, amount, decimals, contractAddress: tt.contractAddress });
       }
-      if (noteLower.includes('withdraw_liquidity') || noteLower.includes('remove_liquidity')) {
-        return 'Remove Liquidity';
-      }
-      if (noteLower.includes('claim') || noteLower.includes('harvest')) {
-        return 'Reward';
-      }
-      if (noteLower.includes('stake') || noteLower.includes('bond')) {
-        return 'Staking Deposit';
-      }
-      if (noteLower.includes('unstake') || noteLower.includes('unbond')) {
-        return 'Staking Return';
-      }
-      // Contract with both in/out is likely a swap
-      if (hasSpent && hasReceived) {
-        return 'swap';
+      if (ttFrom === walletLower && amount > 0) {
+        tokensOut.push({ symbol, amount, decimals, contractAddress: tt.contractAddress });
       }
     }
 
-    // Simple transfers
-    if (typeLower === 'msgsend' || typeLower.includes('send')) {
-      return hasSpent ? 'Transfer Out' : 'Transfer In';
+    // Add native value to tokens in/out
+    if (nativeValue > 0) {
+      if (to === walletLower) {
+        tokensIn.push({ symbol: config.nativeToken.symbol, amount: nativeValue, decimals: 18 });
+      }
+      if (from === walletLower) {
+        tokensOut.push({ symbol: config.nativeToken.symbol, amount: nativeValue, decimals: 18 });
+      }
     }
 
-    // Exchange operations
-    if (typeLower.includes('spotmarket') || typeLower.includes('spotlimit')) {
-      return 'swap';
-    }
-    if (typeLower.includes('derivative') || typeLower.includes('perpetual')) {
-      if (typeLower.includes('create')) return 'Open Position';
-      if (typeLower.includes('cancel')) return 'Close Position';
-      return 'swap';
-    }
+    // Classify based on token movements
+    const hasIn = tokensIn.length > 0;
+    const hasOut = tokensOut.length > 0;
 
-    // Auction
-    if (typeLower.includes('bid') || typeLower.includes('auction')) {
-      return 'swap';
-    }
-
-    // If has both in and out, likely a swap
-    if (hasSpent && hasReceived) {
-      return 'swap';
-    }
-
-    // Default based on flow direction
-    if (hasSpent && !hasReceived) return 'Transfer Out';
-    if (hasReceived && !hasSpent) return 'Transfer In';
-
-    return ''; // Unknown - will show as empty tag
-  };
-
-  const txTag = classifyTransaction();
-
-  // SWAP/TRADE: Both sent and received tokens
-  if (hasSpent && hasReceived) {
-    if (movements.spent.length === 1 && movements.received.length === 1) {
-      // Clean swap: one token for another - single row
-      const sent = movements.spent[0];
-      const recv = movements.received[0];
-      results.push({
-        ...baseTx,
-        sentQty: sent.amount.toFixed(8).replace(/\.?0+$/, ''),
-        sentCurrency: sent.symbol,
-        receivedQty: recv.amount.toFixed(8).replace(/\.?0+$/, ''),
-        receivedCurrency: recv.symbol,
-        feeAmount,
-        feeCurrency,
-        tag: txTag,
-        notes: txNote,
-        asset: `${sent.symbol}→${recv.symbol}`,
-        amount: recv.amount.toFixed(6).replace(/\.?0+$/, ''),
-      });
+    let tag;
+    if (hasIn && hasOut) {
+      tag = 'swap';
+    } else if (hasIn) {
+      tag = 'Transfer In';
+    } else if (hasOut) {
+      tag = 'Transfer Out';
+    } else if (walletInitiated && feeRaw > 0) {
+      tag = 'fee';
     } else {
-      // Multiple tokens: create rows for each movement
-      for (const sent of movements.spent) {
-        results.push({
-          ...baseTx,
-          sentQty: sent.amount.toFixed(8).replace(/\.?0+$/, ''),
-          sentCurrency: sent.symbol,
-          feeAmount: results.length === 0 ? feeAmount : '',
-          feeCurrency: results.length === 0 ? feeCurrency : '',
-          tag: txTag,
-          notes: txNote,
-          asset: sent.symbol,
-          amount: `-${sent.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-        });
-      }
-      for (const recv of movements.received) {
-        results.push({
-          ...baseTx,
-          receivedQty: recv.amount.toFixed(8).replace(/\.?0+$/, ''),
-          receivedCurrency: recv.symbol,
-          tag: txTag,
-          notes: txNote,
-          asset: recv.symbol,
-          amount: recv.amount.toFixed(6).replace(/\.?0+$/, ''),
-        });
-      }
+      continue; // Nothing relevant
     }
-  }
-  // SENT ONLY
-  else if (hasSpent && !hasReceived) {
-    for (const sent of movements.spent) {
-      results.push({
-        ...baseTx,
-        sentQty: sent.amount.toFixed(8).replace(/\.?0+$/, ''),
-        sentCurrency: sent.symbol,
-        feeAmount: results.length === 0 ? feeAmount : '',
-        feeCurrency: results.length === 0 ? feeCurrency : '',
-        tag: txTag,
-        notes: txNote,
-        asset: sent.symbol,
-        amount: `-${sent.amount.toFixed(6).replace(/\.?0+$/, '')}`,
-      });
-    }
-  }
-  // RECEIVED ONLY
-  else if (hasReceived && !hasSpent) {
-    for (const recv of movements.received) {
-      results.push({
-        ...baseTx,
-        receivedQty: recv.amount.toFixed(8).replace(/\.?0+$/, ''),
-        receivedCurrency: recv.symbol,
-        tag: txTag,
-        notes: txNote,
-        asset: recv.symbol,
-        amount: recv.amount.toFixed(6).replace(/\.?0+$/, ''),
-      });
-    }
-  }
 
-  // Add gas fee as separate row if not already in spent tokens
-  if (feeRaw > 0 && results.length > 0) {
-    const feeInSent = movements.spent.some(s => s.symbol === feeCurrency);
-    if (!feeInSent) {
+    // Create transaction records
+    if (tag === 'swap') {
+      // For swaps, create one record per token pair
+      // Simplification: take first token out and first token in
+      const sentToken = tokensOut[0];
+      const recvToken = tokensIn[0];
+
       results.push({
         ...baseTx,
-        sentQty: feeAmount,
-        sentCurrency: feeCurrency,
+        sentQty: sentToken.amount.toFixed(8).replace(/\.?0+$/, ''),
+        sentCurrency: sentToken.symbol,
+        sentContractAddress: sentToken.contractAddress,
+        receivedQty: recvToken.amount.toFixed(8).replace(/\.?0+$/, ''),
+        receivedCurrency: recvToken.symbol,
+        receivedContractAddress: recvToken.contractAddress,
+        feeAmount: walletInitiated ? feeAmount : '',
+        feeCurrency: walletInitiated ? feeCurrency : '',
+        tag: 'swap',
+        notes: txNote || 'Swap',
+        asset: `${sentToken.symbol}→${recvToken.symbol}`,
+        amount: '',
+      });
+
+      // If there are additional tokens, create separate records
+      for (let i = 1; i < tokensOut.length; i++) {
+        const t = tokensOut[i];
+        results.push({
+          ...baseTx,
+          sentQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
+          sentCurrency: t.symbol,
+          sentContractAddress: t.contractAddress,
+          tag: 'swap',
+          notes: txNote,
+          asset: t.symbol,
+          amount: `-${t.amount.toFixed(8).replace(/\.?0+$/, '')}`,
+        });
+      }
+      for (let i = 1; i < tokensIn.length; i++) {
+        const t = tokensIn[i];
+        results.push({
+          ...baseTx,
+          receivedQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
+          receivedCurrency: t.symbol,
+          receivedContractAddress: t.contractAddress,
+          tag: 'swap',
+          notes: txNote,
+          asset: t.symbol,
+          amount: t.amount.toFixed(8).replace(/\.?0+$/, ''),
+        });
+      }
+    } else if (tag === 'Transfer In') {
+      for (const t of tokensIn) {
+        results.push({
+          ...baseTx,
+          receivedQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
+          receivedCurrency: t.symbol,
+          receivedContractAddress: t.contractAddress,
+          tag: 'Transfer In',
+          notes: txNote || 'Received',
+          asset: t.symbol,
+          amount: t.amount.toFixed(8).replace(/\.?0+$/, ''),
+        });
+      }
+    } else if (tag === 'Transfer Out') {
+      for (const t of tokensOut) {
+        results.push({
+          ...baseTx,
+          sentQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
+          sentCurrency: t.symbol,
+          sentContractAddress: t.contractAddress,
+          feeAmount: walletInitiated ? feeAmount : '',
+          feeCurrency: walletInitiated ? feeCurrency : '',
+          tag: 'Transfer Out',
+          notes: txNote || 'Sent',
+          asset: t.symbol,
+          amount: `-${t.amount.toFixed(8).replace(/\.?0+$/, '')}`,
+        });
+      }
+    } else if (tag === 'fee') {
+      results.push({
+        ...baseTx,
+        // Fee only - don't put in sent column, just fee column
         feeAmount,
         feeCurrency,
         tag: 'fee',
-        notes: 'Transaction fee',
+        notes: txNote || 'Contract interaction',
         asset: feeCurrency,
         amount: `-${feeAmount}`,
       });
     }
   }
 
-  // If no movements at all, just record the gas fee
-  if (results.length === 0 && feeRaw > 0) {
-    results.push({
-      ...baseTx,
-      sentQty: feeAmount,
-      sentCurrency: feeCurrency,
-      feeAmount,
-      feeCurrency,
-      tag: 'fee',
-      notes: txNote || 'Transaction fee',
-      asset: feeCurrency,
-      amount: `-${feeAmount}`,
-    });
-  }
-
   return results;
 }
 
-
-// Helper functions - no truncation for CSV accuracy
-function truncateAddress(addr) {
-  return addr || '';
-}
-
-function truncateValidator(addr) {
-  return addr || '';
-}
-
-function truncateMarketId(id) {
-  return id || 'market';
-}
 
 // ============================================================================
 // CSV GENERATION - Awaken Tax format
@@ -770,7 +601,7 @@ const styles = {
   logo: {
     width: '48px',
     height: '48px',
-    background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 50%, #00f2fe 100%)',
+    background: config.theme.gradient,
     borderRadius: '12px',
     display: 'flex',
     alignItems: 'center',
@@ -824,7 +655,7 @@ const styles = {
   },
   button: {
     padding: '14px 24px',
-    background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)',
+    background: config.theme.gradient,
     border: 'none',
     borderRadius: '10px',
     color: '#000',
@@ -1155,8 +986,8 @@ export default function Home() {
   const fetchTransactions = useCallback(async () => {
     const trimmedAddress = address.trim();
 
-    if (!trimmedAddress || !trimmedAddress.startsWith('inj1') || trimmedAddress.length !== 42) {
-      setError('Please enter a valid Injective address (starts with inj1, 42 characters)');
+    if (!trimmedAddress || !config.validateAddress(trimmedAddress)) {
+      setError(`Please enter a valid ${config.name} address`);
       return;
     }
 
@@ -1173,10 +1004,10 @@ export default function Home() {
       // Ensure tokens are loaded
       const tokenData = await loadTokensGlobal();
       setTokenCount(Object.keys(tokenData || {}).length);
-      setProgress(p => ({ ...p, status: 'Connecting to Injective...' }));
+      setProgress(p => ({ ...p, status: `Connecting to ${config.name}...` }));
 
-      const allTxs = [];
-      const rawTxs = []; // Keep raw transactions for swap price extraction
+      const allRawTxs = [];
+      const allTokenTransfers = [];
       const seenHashes = new Set();
       let hasMore = true;
       let skip = 0;
@@ -1196,6 +1027,10 @@ export default function Home() {
 
         const data = await response.json();
         const txs = data.data || data.txs || [];
+        const tokenTransfers = data.tokenTransfers || [];
+
+        // Collect token transfers
+        allTokenTransfers.push(...tokenTransfers);
 
         // Update total estimate from paging info
         if (data.paging?.total && data.paging.total > totalEstimate) {
@@ -1207,7 +1042,7 @@ export default function Home() {
         } else {
           let reachedStartDate = false;
           for (const tx of txs) {
-            const txTimestamp = tx.blockTimestamp || tx.block_timestamp || tx.timestamp;
+            const txTimestamp = tx.timeStamp ? parseInt(tx.timeStamp) * 1000 : null;
             const txDate = txTimestamp ? new Date(txTimestamp).toISOString().split('T')[0] : null;
 
             // Check if transaction is older than start date - stop fetching
@@ -1228,12 +1063,8 @@ export default function Home() {
             if (seenHashes.has(txHash)) continue;
             seenHashes.add(txHash);
 
-            // Keep raw transaction for swap price extraction
-            rawTxs.push(tx);
-
-            // Parse and add transactions (failed ones included if gas deductible is enabled)
-            const parsed = parseTransaction(tx, trimmedAddress, true); // Always include failed txs
-            allTxs.push(...parsed);
+            // Keep raw transaction
+            allRawTxs.push(tx);
           }
 
           // Stop fetching if we've reached transactions older than startDate
@@ -1245,17 +1076,21 @@ export default function Home() {
           if (txs.length < 100) hasMore = false;
 
           setProgress({
-            current: allTxs.length,
-            total: totalEstimate || allTxs.length,
+            current: allRawTxs.length,
+            total: totalEstimate || allRawTxs.length,
             status: startDate
               ? `Fetching transactions from ${startDate}...`
-              : `Processing ${allTxs.length.toLocaleString()} transactions...`,
+              : `Fetching ${allRawTxs.length.toLocaleString()} transactions...`,
           });
 
           // Small delay to prevent rate limiting
           await new Promise(r => setTimeout(r, 50));
         }
       }
+
+      // Parse all transactions with token transfer data
+      setProgress(p => ({ ...p, status: `Processing ${allRawTxs.length} transactions with token data...` }));
+      const allTxs = parseTransactionsWithTokens(allRawTxs, allTokenTransfers, trimmedAddress);
 
       if (cancelRef.current) {
         setLoading(false);
@@ -1292,30 +1127,38 @@ export default function Home() {
         // Calculate P&L using FIFO cost basis
         const costTracker = new CostBasisTracker();
 
-        // Collect unique token/date combinations for price fetching
+        // Collect unique token/timestamp combinations for price fetching
         const priceRequests = [];
         const seen = new Set();
         for (const tx of filteredTxs) {
-          // Request prices for received tokens
+          // Request prices for received tokens (include contract address for DefiLlama)
           if (tx.receivedCurrency) {
-            const key = `${tx.receivedCurrency}|${tx.dateStr}`;
+            const key = `${tx.receivedCurrency}|${tx.timestamp}`;
             if (!seen.has(key)) {
               seen.add(key);
-              priceRequests.push({ token: tx.receivedCurrency, date: tx.dateStr });
+              priceRequests.push({
+                token: tx.receivedCurrency,
+                timestamp: tx.timestamp,
+                address: tx.receivedContractAddress, // Contract address for DefiLlama
+              });
             }
           }
           // Request prices for sent tokens
           if (tx.sentCurrency) {
-            const key = `${tx.sentCurrency}|${tx.dateStr}`;
+            const key = `${tx.sentCurrency}|${tx.timestamp}`;
             if (!seen.has(key)) {
               seen.add(key);
-              priceRequests.push({ token: tx.sentCurrency, date: tx.dateStr });
+              priceRequests.push({
+                token: tx.sentCurrency,
+                timestamp: tx.timestamp,
+                address: tx.sentContractAddress, // Contract address for DefiLlama
+              });
             }
           }
         }
 
         // Fetch prices from Injective DEX trades (chain-specific) with Pyth fallback
-        setProgress(p => ({ ...p, status: `Fetching ${priceRequests.length} prices from Injective DEX...` }));
+        setProgress(p => ({ ...p, status: `Fetching ${priceRequests.length} prices from DefiLlama...` }));
 
         // Batch into groups of 10 for CoinGecko rate limits
         for (let i = 0; i < priceRequests.length; i += 10) {
@@ -1332,8 +1175,8 @@ export default function Home() {
         for (const tx of filteredTxs) {
           const receivedQty = tx.receivedQty ? parseFloat(tx.receivedQty) : 0;
           const sentQty = tx.sentQty ? parseFloat(tx.sentQty) : 0;
-          const receivedPrice = tx.receivedCurrency ? getPrice(tx.receivedCurrency, tx.dateStr) : null;
-          const sentPrice = tx.sentCurrency ? getPrice(tx.sentCurrency, tx.dateStr) : null;
+          const receivedPrice = tx.receivedCurrency ? getPrice(tx.receivedCurrency, tx.timestamp) : null;
+          const sentPrice = tx.sentCurrency ? getPrice(tx.sentCurrency, tx.timestamp) : null;
 
           // Populate fiat values for CSV (leave empty if price unavailable)
           if (receivedQty > 0 && receivedPrice !== null) {
@@ -1348,13 +1191,13 @@ export default function Home() {
                             (sentQty > 0 && sentPrice === null);
 
           // Track price sources and time diffs for this transaction
-          const recvSource = tx.receivedCurrency ? getPriceSource(tx.receivedCurrency, tx.dateStr) : null;
-          const sentSource = tx.sentCurrency ? getPriceSource(tx.sentCurrency, tx.dateStr) : null;
+          const recvSource = tx.receivedCurrency ? getPriceSource(tx.receivedCurrency, tx.timestamp) : null;
+          const sentSource = tx.sentCurrency ? getPriceSource(tx.sentCurrency, tx.timestamp) : null;
           tx.priceSource = recvSource || sentSource; // 'injective-dex' or 'pyth'
 
           // Check for time difference warnings
-          const recvTimeDiff = tx.receivedCurrency ? getPriceTimeDiff(tx.receivedCurrency, tx.dateStr) : null;
-          const sentTimeDiff = tx.sentCurrency ? getPriceTimeDiff(tx.sentCurrency, tx.dateStr) : null;
+          const recvTimeDiff = tx.receivedCurrency ? getPriceTimeDiff(tx.receivedCurrency, tx.timestamp) : null;
+          const sentTimeDiff = tx.sentCurrency ? getPriceTimeDiff(tx.sentCurrency, tx.timestamp) : null;
           tx.priceTimeDiff = recvTimeDiff || sentTimeDiff; // Hours away from actual trade
 
           // Add received tokens to cost basis (only if we have a price)
@@ -1441,7 +1284,7 @@ export default function Home() {
     const link = document.createElement('a');
     const timestamp = new Date().toISOString().slice(0, 10);
     link.href = URL.createObjectURL(blob);
-    link.download = `injective-${address.slice(0, 10)}-${timestamp}-awaken.csv`;
+    link.download = `${config.cacheKeyPrefix}-${address.slice(0, 10)}-${timestamp}-awaken.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
   }, [transactions, address]);
@@ -1469,13 +1312,13 @@ export default function Home() {
         {/* Header */}
         <header style={styles.header} className="responsive-header">
           <div style={styles.headerLeft} className="responsive-header-left">
-            <div style={styles.logo} className="responsive-logo">INJ</div>
+            <div style={{...styles.logo, background: config.theme.gradient}} className="responsive-logo">{config.logo}</div>
             <div>
-              <h1 style={styles.title} className="responsive-title">Injective Tax Exporter</h1>
+              <h1 style={styles.title} className="responsive-title">{config.name} Tax Exporter</h1>
               <p style={styles.subtitle} className="responsive-subtitle">
                 Export transaction history for Awaken Tax
                 {tokenCount > 0 && (
-                  <span style={{ color: '#4facfe', marginLeft: '8px' }}>
+                  <span style={{ color: config.theme.primary, marginLeft: '8px' }}>
                     {tokenCount} tokens
                   </span>
                 )}
@@ -1492,7 +1335,7 @@ export default function Home() {
               value={address}
               onChange={e => setAddress(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="inj1..."
+              placeholder={config.addressPlaceholder}
               disabled={loading}
               style={{
                 ...styles.input,
@@ -1777,7 +1620,7 @@ export default function Home() {
                 className="responsive-filter-button"
                 style={{
                   ...styles.filterButton,
-                  ...(filter === 'all' ? { background: 'rgba(79, 172, 254, 0.15)', border: '1px solid #4facfe', color: '#4facfe' } : {}),
+                  ...(filter === 'all' ? { background: `${config.theme.primary}15`, border: `1px solid ${config.theme.primary}`, color: config.theme.primary } : {}),
                 }}
               >
                 All ({stats.total})
@@ -1981,7 +1824,7 @@ export default function Home() {
                         </td>
                         <td style={{ ...styles.td, textAlign: 'center' }}>
                           <a
-                            href={`https://explorer.injective.network/transaction/${tx.txHash}`}
+                            href={config.txUrl(tx.txHash)}
                             target="_blank"
                             rel="noopener noreferrer"
                             style={styles.link}
@@ -2052,7 +1895,7 @@ export default function Home() {
                         {tx.notes || '—'}
                       </span>
                       <a
-                        href={`https://explorer.injective.network/transaction/${tx.txHash}`}
+                        href={config.txUrl(tx.txHash)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="mobile-tx-link"
@@ -2085,7 +1928,7 @@ export default function Home() {
               No Transactions Yet
             </h3>
             <p style={{ color: '#52525b', margin: 0, fontSize: '15px', maxWidth: '320px', marginInline: 'auto' }} className="responsive-empty-text">
-              Enter your Injective wallet address above to fetch and export your transaction history
+              Enter your {config.name} wallet address above to fetch and export your transaction history
             </p>
           </div>
         )}
@@ -2098,13 +1941,13 @@ export default function Home() {
               href="https://awaken.tax"
               target="_blank"
               rel="noopener noreferrer"
-              style={{ color: '#4facfe', textDecoration: 'none' }}
+              style={{ color: config.theme.primary, textDecoration: 'none' }}
             >
               Awaken Tax
             </a>
           </p>
           <p style={{ fontSize: '12px', color: '#3f3f46', margin: 0 }}>
-            Prices from Injective DEX trades (chain-specific). <span style={{ color: '#f59e0b' }}>*</span> = Pyth fallback (cross-chain).
+            Prices from DefiLlama (historical). <span style={{ color: '#f59e0b' }}>*</span> = Pyth/CoinGecko fallback.
           </p>
           <p style={{ fontSize: '12px', color: '#3f3f46', margin: '4px 0 0' }}>
             This tool is not financial advice.

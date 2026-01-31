@@ -1,8 +1,9 @@
 import './globals.css'
+import config from '../chain.config'
 
 export const metadata = {
-  title: 'Injective Tax Exporter | Awaken Tax',
-  description: 'Export your Injective transactions in Awaken Tax CSV format',
+  title: `${config.name} Tax Exporter | Awaken Tax`,
+  description: `Export your ${config.name} transactions in Awaken Tax CSV format`,
 }
 
 export default function RootLayout({ children }) {
