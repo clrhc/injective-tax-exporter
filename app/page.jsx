@@ -1,50 +1,85 @@
 'use client';
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 
 const EXPLORER_API = '/api/transactions';
 const ITEMS_PER_PAGE = 25;
 
-const TOKEN_DECIMALS = { 'inj': 18, 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7': 6, 'peggy0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48': 6, 'peggy0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': 8, 'peggy0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': 18 };
+// Token metadata cache (fetched from API)
+let globalTokenCache = {};
 
-const formatDenom = (denom) => {
+// Format denom using fetched metadata or fallback logic
+const formatDenom = (denom, tokenMeta = {}) => {
   if (!denom) return 'INJ';
-  if (denom === 'inj') return 'INJ';
-  if (denom.startsWith('peggy0x')) {
-    const addr = denom.replace('peggy', '').toLowerCase();
-    const known = { '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT', '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'USDC', '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': 'WBTC', '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 'WETH' };
-    return known[addr] || `PEGGY-${addr.slice(0, 6)}`;
+  
+  const denomLower = denom.toLowerCase();
+  
+  // Check cache first
+  if (tokenMeta[denomLower]) {
+    return tokenMeta[denomLower].symbol;
   }
-  if (denom.startsWith('ibc/')) return `IBC-${denom.slice(4, 10)}`;
-  if (denom.startsWith('factory/')) return denom.split('/').pop().toUpperCase();
-  return denom.toUpperCase();
+  if (globalTokenCache[denomLower]) {
+    return globalTokenCache[denomLower].symbol;
+  }
+  
+  // Native INJ
+  if (denom === 'inj') return 'INJ';
+  
+  // Peggy tokens (bridged from Ethereum)
+  if (denom.startsWith('peggy0x')) {
+    // Return shortened address if not in metadata
+    const addr = denom.replace('peggy', '');
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  }
+  
+  // IBC tokens
+  if (denom.startsWith('ibc/')) {
+    return `IBC/${denom.slice(4, 10)}...`;
+  }
+  
+  // Factory tokens
+  if (denom.startsWith('factory/')) {
+    const parts = denom.split('/');
+    return parts[parts.length - 1].toUpperCase();
+  }
+  
+  return denom.length > 12 ? `${denom.slice(0, 10)}...` : denom.toUpperCase();
 };
 
-const getDecimals = (denom) => (!denom || denom === 'inj') ? 18 : (TOKEN_DECIMALS[denom.toLowerCase()] || 18);
+// Get decimals from metadata or default
+const getDecimals = (denom, tokenMeta = {}) => {
+  if (!denom) return 18;
+  const denomLower = denom.toLowerCase();
+  if (tokenMeta[denomLower]) return tokenMeta[denomLower].decimals;
+  if (globalTokenCache[denomLower]) return globalTokenCache[denomLower].decimals;
+  if (denom === 'inj') return 18;
+  return 18; // Default
+};
 
-const formatAmount = (amount, denom) => {
+const formatAmount = (amount, denom, tokenMeta = {}) => {
   if (!amount) return '';
-  const num = parseFloat(amount) / Math.pow(10, getDecimals(denom));
+  const decimals = getDecimals(denom, tokenMeta);
+  const num = parseFloat(amount) / Math.pow(10, decimals);
   if (num === 0) return '0';
   if (Math.abs(num) < 0.000001) return num.toExponential(4);
-  return num.toFixed(8).replace(/\.?0+$/, '');
+  if (Math.abs(num) < 1) return num.toFixed(8).replace(/\.?0+$/, '');
+  if (Math.abs(num) < 1000) return num.toFixed(6).replace(/\.?0+$/, '');
+  return num.toFixed(4).replace(/\.?0+$/, '');
 };
 
 // Parse transaction into Awaken Tax format
-// Format: Date, Asset, Amount, Fee, P&L, Payment Token, ID, Notes, Tag, Transaction Hash
-const parseTransaction = (tx, walletAddress) => {
+const parseTransaction = (tx, walletAddress, tokenMeta = {}) => {
   const results = [];
   const date = new Date(tx.blockTimestamp || tx.block_timestamp || tx.timestamp);
-  // Format: YYYY-MM-DD
   const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
   const dateDisplay = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   const timeDisplay = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   const txHash = tx.hash || tx.txHash || tx.id || '';
   const fee = tx.gasFee?.amount?.[0] || tx.gas_fee?.amount?.[0];
-  const feeAmount = fee ? formatAmount(fee.amount, fee.denom) : '';
-  const feeCurrency = fee ? formatDenom(fee.denom) : '';
+  const feeAmount = fee ? formatAmount(fee.amount, fee.denom, tokenMeta) : '';
+  const feeCurrency = fee ? formatDenom(fee.denom, tokenMeta) : '';
   const messages = tx.messages || tx.data?.messages || [];
   
-  // Parse event logs for actual amounts
+  // Parse event logs
   const logs = tx.logs || tx.rawLog || [];
   const events = [];
   try {
@@ -62,8 +97,6 @@ const parseTransaction = (tx, walletAddress) => {
     return null;
   };
   
-  // Base transaction object
-  // Amount: positive = received, negative = sent
   const baseTx = { 
     dateStr, dateDisplay, timeDisplay, txHash, 
     feeAmount, feeCurrency,
@@ -80,13 +113,11 @@ const parseTransaction = (tx, walletAddress) => {
       const fromAddr = value.from_address || value.fromAddress || '';
       const toAddr = value.to_address || value.toAddress || '';
       for (const coin of (value.amount || [])) {
-        const qty = formatAmount(coin.amount, coin.denom);
-        const cur = formatDenom(coin.denom);
+        const qty = formatAmount(coin.amount, coin.denom, tokenMeta);
+        const cur = formatDenom(coin.denom, tokenMeta);
         if (fromAddr === walletAddress) {
-          // Sent: negative amount
           results.push({ ...baseTx, asset: cur, amount: `-${qty}`, tag: 'transfer', notes: `Send to ${toAddr}` });
         } else if (toAddr === walletAddress) {
-          // Received: positive amount
           results.push({ ...baseTx, asset: cur, amount: qty, feeAmount: '', feeCurrency: '', tag: 'transfer', notes: `Receive from ${fromAddr}` });
         }
       }
@@ -95,14 +126,14 @@ const parseTransaction = (tx, walletAddress) => {
       for (const input of (value.inputs || [])) {
         if (input.address === walletAddress) {
           for (const coin of (input.coins || [])) {
-            results.push({ ...baseTx, asset: formatDenom(coin.denom), amount: `-${formatAmount(coin.amount, coin.denom)}`, tag: 'transfer', notes: `MultiSend output` });
+            results.push({ ...baseTx, asset: formatDenom(coin.denom, tokenMeta), amount: `-${formatAmount(coin.amount, coin.denom, tokenMeta)}`, tag: 'transfer', notes: `MultiSend output` });
           }
         }
       }
       for (const output of (value.outputs || [])) {
         if (output.address === walletAddress) {
           for (const coin of (output.coins || [])) {
-            results.push({ ...baseTx, asset: formatDenom(coin.denom), amount: formatAmount(coin.amount, coin.denom), tag: 'transfer', notes: `MultiSend receive` });
+            results.push({ ...baseTx, asset: formatDenom(coin.denom, tokenMeta), amount: formatAmount(coin.amount, coin.denom, tokenMeta), tag: 'transfer', notes: `MultiSend receive` });
           }
         }
       }
@@ -112,18 +143,18 @@ const parseTransaction = (tx, walletAddress) => {
     else if (type.includes('MsgDelegate') && !type.includes('Undelegate') && !type.includes('Redelegate')) {
       const amt = value.amount;
       const validator = value.validator_address || value.validatorAddress || '';
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: `-${formatAmount(amt.amount, amt.denom)}`, tag: 'stake', notes: `Stake to ${validator}` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: `-${formatAmount(amt.amount, amt.denom, tokenMeta)}`, tag: 'stake', notes: `Stake to ${validator}` });
     }
     else if (type.includes('MsgUndelegate')) {
       const amt = value.amount;
       const validator = value.validator_address || value.validatorAddress || '';
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: formatAmount(amt.amount, amt.denom), tag: 'unstake', notes: `Unstake from ${validator}` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: formatAmount(amt.amount, amt.denom, tokenMeta), tag: 'unstake', notes: `Unstake from ${validator}` });
     }
     else if (type.includes('MsgBeginRedelegate')) {
       const amt = value.amount;
       const src = value.validator_src_address || '';
       const dst = value.validator_dst_address || '';
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: '0', tag: 'stake', notes: `Redelegate ${formatAmount(amt.amount, amt.denom)} from ${src} to ${dst}` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: '0', tag: 'stake', notes: `Redelegate ${formatAmount(amt.amount, amt.denom, tokenMeta)} from ${src} to ${dst}` });
     }
     else if (type.includes('MsgWithdrawDelegatorReward')) {
       const validator = value.validator_address || value.validatorAddress || '';
@@ -132,9 +163,11 @@ const parseTransaction = (tx, walletAddress) => {
       const rewardStr = findEventAmount('withdraw_rewards', 'amount') || findEventAmount('coin_received', 'amount');
       if (rewardStr) {
         const match = rewardStr.match(/^(\d+)(.+)$/);
-        if (match) { rewardQty = formatAmount(match[1], match[2]); rewardCur = formatDenom(match[2]); }
+        if (match) { 
+          rewardQty = formatAmount(match[1], match[2], tokenMeta); 
+          rewardCur = formatDenom(match[2], tokenMeta); 
+        }
       }
-      // Rewards are income, positive amount, P&L = amount (taxable income)
       results.push({ ...baseTx, asset: rewardCur, amount: rewardQty, pnl: rewardQty, tag: 'reward', notes: `Claim staking rewards from ${validator}` });
     }
     else if (type.includes('MsgWithdrawValidatorCommission')) {
@@ -142,7 +175,7 @@ const parseTransaction = (tx, walletAddress) => {
       const commStr = findEventAmount('withdraw_commission', 'amount') || findEventAmount('coin_received', 'amount');
       if (commStr) {
         const match = commStr.match(/^(\d+)(.+)$/);
-        if (match) commQty = formatAmount(match[1], match[2]);
+        if (match) commQty = formatAmount(match[1], match[2], tokenMeta);
       }
       results.push({ ...baseTx, asset: 'INJ', amount: commQty, pnl: commQty, tag: 'reward', notes: `Withdraw validator commission` });
     }
@@ -155,8 +188,8 @@ const parseTransaction = (tx, walletAddress) => {
         const receiver = value.receiver || '';
         const sender = value.sender || '';
         const channel = value.source_channel || '';
-        const qty = formatAmount(token.amount, token.denom);
-        const cur = formatDenom(token.denom);
+        const qty = formatAmount(token.amount, token.denom, tokenMeta);
+        const cur = formatDenom(token.denom, tokenMeta);
         if (isOut) {
           results.push({ ...baseTx, asset: cur, amount: `-${qty}`, tag: 'transfer', notes: `IBC send to ${receiver} via ${channel}` });
         } else {
@@ -185,7 +218,7 @@ const parseTransaction = (tx, walletAddress) => {
       const orderType = value.order?.order_type || '';
       const margin = value.order?.margin;
       let marginAmt = '';
-      if (margin) marginAmt = formatAmount(margin, 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7'); // Usually USDT
+      if (margin) marginAmt = formatAmount(margin, 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7', tokenMeta);
       results.push({ ...baseTx, asset: 'USDT', amount: marginAmt ? `-${marginAmt}` : '', paymentToken: 'USDT', tag: 'open_position', notes: `${orderType} position on ${marketId}` });
     }
     else if (type.includes('MsgCancelDerivativeOrder')) {
@@ -198,7 +231,7 @@ const parseTransaction = (tx, walletAddress) => {
     else if (type.includes('MsgIncreasePositionMargin')) {
       const marketId = value.market_id || '';
       const amount = value.amount;
-      results.push({ ...baseTx, asset: 'USDT', amount: amount ? `-${formatAmount(amount, 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7')}` : '', tag: 'open_position', notes: `Increase margin on ${marketId}` });
+      results.push({ ...baseTx, asset: 'USDT', amount: amount ? `-${formatAmount(amount, 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7', tokenMeta)}` : '', tag: 'open_position', notes: `Increase margin on ${marketId}` });
     }
     else if (type.includes('MsgLiquidatePosition')) {
       results.push({ ...baseTx, asset: '', amount: '', tag: 'close_position', notes: `Position liquidated` });
@@ -224,15 +257,15 @@ const parseTransaction = (tx, walletAddress) => {
     // ============ SUBACCOUNT ============
     else if (type.includes('MsgDeposit') && !type.includes('gov')) {
       const amt = value.amount;
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: `-${formatAmount(amt.amount, amt.denom)}`, tag: 'transfer', notes: `Deposit to trading subaccount` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: `-${formatAmount(amt.amount, amt.denom, tokenMeta)}`, tag: 'transfer', notes: `Deposit to trading subaccount` });
     }
     else if (type.includes('MsgWithdraw') && !type.includes('Reward') && !type.includes('Commission')) {
       const amt = value.amount;
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: formatAmount(amt.amount, amt.denom), tag: 'transfer', notes: `Withdraw from trading subaccount` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: formatAmount(amt.amount, amt.denom, tokenMeta), tag: 'transfer', notes: `Withdraw from trading subaccount` });
     }
     else if (type.includes('MsgSubaccountTransfer') || type.includes('MsgExternalTransfer')) {
       const amt = value.amount;
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: '0', tag: 'transfer', notes: `Subaccount transfer ${formatAmount(amt.amount, amt.denom)} ${formatDenom(amt.denom)}` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: '0', tag: 'transfer', notes: `Subaccount transfer ${formatAmount(amt.amount, amt.denom, tokenMeta)} ${formatDenom(amt.denom, tokenMeta)}` });
     }
     
     // ============ SMART CONTRACTS ============
@@ -247,7 +280,7 @@ const parseTransaction = (tx, walletAddress) => {
       } catch(e) {}
       const funds = Array.isArray(value.funds) ? value.funds : [];
       if (funds.length > 0 && funds[0]) {
-        results.push({ ...baseTx, asset: formatDenom(funds[0].denom), amount: `-${formatAmount(funds[0].amount, funds[0].denom)}`, tag: 'contract_interaction', notes: `${action} on ${contract}` });
+        results.push({ ...baseTx, asset: formatDenom(funds[0].denom, tokenMeta), amount: `-${formatAmount(funds[0].amount, funds[0].denom, tokenMeta)}`, tag: 'contract_interaction', notes: `${action} on ${contract}` });
       } else {
         results.push({ ...baseTx, asset: '', amount: '', tag: 'contract_interaction', notes: `${action} on ${contract}` });
       }
@@ -263,7 +296,7 @@ const parseTransaction = (tx, walletAddress) => {
     else if (type.includes('MsgSendToEth')) {
       const amt = value.amount;
       const ethDest = value.eth_dest || '';
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: `-${formatAmount(amt.amount, amt.denom)}`, tag: 'bridge_out', notes: `Bridge to Ethereum ${ethDest}` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: `-${formatAmount(amt.amount, amt.denom, tokenMeta)}`, tag: 'bridge_out', notes: `Bridge to Ethereum ${ethDest}` });
     }
     else if (type.includes('MsgDepositClaim')) {
       results.push({ ...baseTx, asset: '', amount: '', tag: 'bridge_in', notes: `Bridge deposit from Ethereum` });
@@ -285,13 +318,13 @@ const parseTransaction = (tx, walletAddress) => {
     }
     else if (type.includes('MsgUnderwrite')) {
       const amt = value.deposit;
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: `-${formatAmount(amt.amount, amt.denom)}`, tag: 'add_liquidity', notes: `Underwrite insurance` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: `-${formatAmount(amt.amount, amt.denom, tokenMeta)}`, tag: 'add_liquidity', notes: `Underwrite insurance` });
     }
     
     // ============ AUCTION ============
     else if (type.includes('MsgBid')) {
       const amt = value.bid_amount;
-      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom), amount: `-${formatAmount(amt.amount, amt.denom)}`, tag: '', notes: `Auction bid` });
+      if (amt) results.push({ ...baseTx, asset: formatDenom(amt.denom, tokenMeta), amount: `-${formatAmount(amt.amount, amt.denom, tokenMeta)}`, tag: '', notes: `Auction bid` });
     }
     
     // ============ AUTHZ ============
@@ -315,8 +348,7 @@ const parseTransaction = (tx, walletAddress) => {
   return results;
 };
 
-// Generate Awaken Tax CSV format
-// Date,Asset,Amount,Fee,P&L,Payment Token,ID,Notes,Tag,Transaction Hash
+// Generate Awaken Tax CSV
 const generateCSV = (transactions) => {
   const headers = ['Date', 'Asset', 'Amount', 'Fee', 'P&L', 'Payment Token', 'ID', 'Notes', 'Tag', 'Transaction Hash'];
   
@@ -388,7 +420,8 @@ function SuccessModal({ isOpen, stats, onClose }) {
       <div style={{ position: 'relative', background: 'linear-gradient(135deg, #1a1a2e, #16162a)', borderRadius: '24px', border: '1px solid rgba(34,197,94,0.3)', padding: '40px', maxWidth: '420px', width: '90%', textAlign: 'center' }}>
         <div style={{ width: '80px', height: '80px', margin: '0 auto 24px', background: 'linear-gradient(135deg, #22c55e, #16a34a)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '40px' }}>✓</div>
         <h3 style={{ margin: '0 0 8px', fontSize: '24px', fontWeight: 700, color: '#fff' }}>Export Ready!</h3>
-        <p style={{ margin: '0 0 24px', color: '#64748b' }}>{stats.total.toLocaleString()} transactions loaded</p>
+        <p style={{ margin: '0 0 16px', color: '#64748b' }}>{stats.total.toLocaleString()} transactions loaded</p>
+        <p style={{ margin: '0 0 24px', color: '#4ade80', fontSize: '14px' }}>✓ {stats.tokenCount} tokens identified</p>
         <button onClick={onClose} style={{ width: '100%', padding: '14px', background: 'linear-gradient(135deg, #22c55e, #16a34a)', border: 'none', borderRadius: '12px', color: '#fff', fontSize: '16px', fontWeight: 600, cursor: 'pointer' }}>View Transactions</button>
       </div>
     </div>
@@ -405,7 +438,28 @@ export default function Home() {
   const [currentPage, setCurrentPage] = useState(1);
   const [filter, setFilter] = useState('all');
   const [showSuccess, setShowSuccess] = useState(false);
+  const [tokenMeta, setTokenMeta] = useState({});
   const [cancelRef] = useState({ cancelled: false });
+
+  // Fetch token metadata on mount
+  useEffect(() => {
+    async function loadTokens() {
+      try {
+        const res = await fetch(`${EXPLORER_API}/tokens?type=tokens`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.tokens) {
+            setTokenMeta(data.tokens);
+            globalTokenCache = data.tokens;
+            console.log(`Loaded ${Object.keys(data.tokens).length} token metadata`);
+          }
+        }
+      } catch (err) {
+        console.log('Token metadata fetch failed, using fallbacks');
+      }
+    }
+    loadTokens();
+  }, []);
 
   const filteredTxs = useMemo(() => filter === 'all' ? transactions : transactions.filter(tx => tx.tag === filter), [transactions, filter]);
   const paginatedTxs = useMemo(() => filteredTxs.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE), [filteredTxs, currentPage]);
@@ -418,11 +472,28 @@ export default function Home() {
     }
     cancelRef.cancelled = false;
     setLoading(true); setError(''); setTransactions([]); setCurrentPage(1); setFilter('all'); setShowSuccess(false);
-    setProgress({ current: 0, total: 0, status: 'Connecting to Injective...' });
+    setProgress({ current: 0, total: 0, status: 'Loading token metadata...' });
 
     try {
+      // Ensure we have token metadata
+      if (Object.keys(tokenMeta).length === 0) {
+        try {
+          const tokRes = await fetch(`${EXPLORER_API}/tokens?type=tokens`);
+          if (tokRes.ok) {
+            const tokData = await tokRes.json();
+            if (tokData.tokens) {
+              setTokenMeta(tokData.tokens);
+              globalTokenCache = tokData.tokens;
+            }
+          }
+        } catch(e) {}
+      }
+      
       const allTxs = [];
       let hasMore = true, skip = 0, batch = 0;
+      const uniqueAssets = new Set();
+      
+      setProgress({ current: 0, total: 0, status: 'Connecting to Injective...' });
       
       while (hasMore && !cancelRef.cancelled) {
         batch++;
@@ -434,7 +505,11 @@ export default function Home() {
         
         if (!txs.length) hasMore = false;
         else {
-          for (const tx of txs) allTxs.push(...parseTransaction(tx, address));
+          for (const tx of txs) {
+            const parsed = parseTransaction(tx, address, tokenMeta);
+            allTxs.push(...parsed);
+            parsed.forEach(p => { if (p.asset) uniqueAssets.add(p.asset); });
+          }
           skip += 100;
           if (txs.length < 100) hasMore = false;
           setProgress({ current: allTxs.length, total: data.paging?.total || allTxs.length, status: `Found ${allTxs.length.toLocaleString()} transactions...` });
@@ -451,10 +526,10 @@ export default function Home() {
         const tag = tx.tag || '';
         tagCounts[tag] = (tagCounts[tag] || 0) + 1; 
       });
-      setStats({ total: allTxs.length, tagCounts });
+      setStats({ total: allTxs.length, tagCounts, tokenCount: uniqueAssets.size });
       setShowSuccess(true);
     } catch (err) { setError(err.message); } finally { setLoading(false); }
-  }, [address, cancelRef]);
+  }, [address, cancelRef, tokenMeta]);
 
   const downloadCSV = useCallback(() => {
     const blob = new Blob([generateCSV(transactions)], { type: 'text/csv' });
@@ -475,7 +550,7 @@ export default function Home() {
           <div style={{ width: '56px', height: '56px', background: 'linear-gradient(135deg, #3b82f6, #06b6d4)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '28px', boxShadow: '0 8px 32px rgba(59,130,246,0.3)' }}>◈</div>
           <div>
             <h1 style={{ margin: 0, fontSize: '28px', fontWeight: 700 }}>Injective Tax Exporter</h1>
-            <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: '14px' }}>Export transactions for Awaken Tax</p>
+            <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: '14px' }}>Export transactions for Awaken Tax • {Object.keys(tokenMeta).length > 0 ? `${Object.keys(tokenMeta).length} tokens loaded` : 'Loading tokens...'}</p>
           </div>
         </header>
 
@@ -496,7 +571,7 @@ export default function Home() {
 
         {/* Stats */}
         {stats && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '24px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px', marginBottom: '24px' }}>
             <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: '16px', padding: '20px', textAlign: 'center' }}>
               <div style={{ fontSize: '32px', fontWeight: 700 }}>{stats.total.toLocaleString()}</div>
               <div style={{ fontSize: '13px', color: '#64748b' }}>Total Transactions</div>
@@ -504,6 +579,10 @@ export default function Home() {
             <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: '16px', padding: '20px', textAlign: 'center' }}>
               <div style={{ fontSize: '32px', fontWeight: 700, color: '#a78bfa' }}>{Object.keys(stats.tagCounts).length}</div>
               <div style={{ fontSize: '13px', color: '#64748b' }}>Transaction Types</div>
+            </div>
+            <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: '16px', padding: '20px', textAlign: 'center' }}>
+              <div style={{ fontSize: '32px', fontWeight: 700, color: '#4ade80' }}>{stats.tokenCount}</div>
+              <div style={{ fontSize: '13px', color: '#64748b' }}>Unique Assets</div>
             </div>
           </div>
         )}
@@ -609,7 +688,7 @@ export default function Home() {
         {/* Footer */}
         <footer style={{ marginTop: '48px', paddingTop: '24px', borderTop: '1px solid rgba(255,255,255,0.06)', textAlign: 'center' }}>
           <p style={{ color: '#64748b', margin: '0 0 8px' }}>Built for the <a href="https://awaken.tax" target="_blank" rel="noopener noreferrer" style={{ color: '#60a5fa', textDecoration: 'none' }}>Awaken Tax</a> bounty program</p>
-          <p style={{ fontSize: '12px', color: '#4b5563', margin: 0 }}>Data from Injective Explorer API • Not financial advice</p>
+          <p style={{ fontSize: '12px', color: '#4b5563', margin: 0 }}>Token metadata from Injective Labs • Not financial advice</p>
         </footer>
       </div>
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
