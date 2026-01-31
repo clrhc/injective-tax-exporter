@@ -1,12 +1,31 @@
 'use client';
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import config from '../chain.config';
 
 const EXPLORER_API = '/api/transactions';
 const PRICES_API = '/api/prices';
-const TOKEN_LIST_URL = config.tokenListUrl;
-const TOKEN_CACHE_KEY = `${config.cacheKeyPrefix}_token_cache_v2`;
+const CHAINS_API = '/api/chains';
 const ITEMS_PER_PAGE = 25;
+
+// Default chain config (will be replaced when chains load)
+const DEFAULT_CONFIG = {
+  id: 'celo',
+  name: 'Celo',
+  symbol: 'CELO',
+  logo: 'CELO',
+  chainId: 42220,
+  defiLlamaId: 'celo',
+  addressPrefix: '0x',
+  addressLength: 42,
+  validateAddress: (addr) => /^0x[a-fA-F0-9]{40}$/.test(addr),
+  addressPlaceholder: '0x...',
+  nativeToken: { symbol: 'CELO', decimals: 18 },
+  explorerUrl: 'https://celo.blockscout.com',
+  txUrl: (hash) => `https://celo.blockscout.com/tx/${hash}`,
+  addressUrl: (addr) => `https://celo.blockscout.com/address/${addr}`,
+  theme: { primary: '#FCFF52', gradient: 'linear-gradient(135deg, #FCFF52 0%, #35D07F 100%)' },
+  tokenListUrl: 'https://raw.githubusercontent.com/celo-org/celo-token-list/main/celo.tokenlist.json',
+  cacheKeyPrefix: 'celo',
+};
 
 // ============================================================================
 // PRICE STORAGE - In-memory only (no localStorage caching)
@@ -14,14 +33,14 @@ const ITEMS_PER_PAGE = 25;
 let sessionPrices = { data: {}, sources: {} };
 
 // Fetch prices from API - returns { prices, sources, missing, warning }
-async function fetchPricesBatch(requests) {
+async function fetchPricesBatch(requests, chainId = 'celo') {
   if (requests.length === 0) return { missing: [], sources: {} };
 
   try {
     const response = await fetch(PRICES_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requests }),
+      body: JSON.stringify({ requests, chain: chainId }),
     });
 
     if (response.ok) {
@@ -173,7 +192,7 @@ async function fetchAndCacheTokens() {
     const res = await fetch(TOKEN_LIST_URL);
     if (res.ok) {
       const tokens = await res.json();
-      const map = config.buildTokenMap ? config.buildTokenMap(tokens) : buildDefaultTokenMap(tokens);
+      const map = buildDefaultTokenMap(tokens);
       tokenCache.data = map;
       tokenCache.loaded = true;
       tokenCache.loading = null;
@@ -192,7 +211,7 @@ function refreshTokensBackground() {
     .then(res => res.ok ? res.json() : null)
     .then(tokens => {
       if (!tokens) return;
-      const map = config.buildTokenMap ? config.buildTokenMap(tokens) : buildDefaultTokenMap(tokens);
+      const map = buildDefaultTokenMap(tokens);
       tokenCache.data = map;
       persistTokenCache(map);
     })
@@ -218,11 +237,21 @@ function persistTokenCache(map) {
   } catch (e) { /* ignore */ }
 }
 
-// Common tokens from chain config
-const COMMON_TOKENS = config.commonTokens;
+// Common tokens - empty by default, chains provide their own
+const COMMON_TOKENS = {};
 
+// Generic token info lookup - works for any EVM chain
 function getTokenInfo(addressOrSymbol) {
-  return config.getTokenInfo(addressOrSymbol, tokenCache.data);
+  if (!addressOrSymbol) return { symbol: 'UNKNOWN', decimals: 18 };
+  const lower = addressOrSymbol.toLowerCase();
+
+  // Check token cache first
+  if (tokenCache.data?.[lower]) {
+    return tokenCache.data[lower];
+  }
+
+  // Default for unknown tokens
+  return { symbol: addressOrSymbol, decimals: 18 };
 }
 
 function formatAmount(amount, denom) {
@@ -244,7 +273,7 @@ function formatAmount(amount, denom) {
 // Classify transaction based on function name
 // Parse all transactions using token transfer data for accurate classification
 // tokenTransfersByHash: Map of txHash -> array of token transfers for that tx
-function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress) {
+function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress, nativeTokenSymbol = 'ETH') {
   const results = [];
   const walletLower = walletAddress.toLowerCase();
 
@@ -287,7 +316,7 @@ function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress) {
     const gasPrice = tx.gasPrice ? parseFloat(tx.gasPrice) : 0;
     const feeRaw = (gasUsed * gasPrice) / 1e18;
     const feeAmount = feeRaw > 0 ? feeRaw.toFixed(8).replace(/\.?0+$/, '') : '';
-    const feeCurrency = config.nativeToken.symbol;
+    const feeCurrency = nativeTokenSymbol;
 
     // Check if wallet initiated this tx (for gas fee attribution)
     const from = (tx.from || '').toLowerCase();
@@ -368,10 +397,10 @@ function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress) {
     // Add native value to tokens in/out
     if (nativeValue > 0) {
       if (to === walletLower) {
-        tokensIn.push({ symbol: config.nativeToken.symbol, amount: nativeValue, decimals: 18 });
+        tokensIn.push({ symbol: nativeTokenSymbol, amount: nativeValue, decimals: 18 });
       }
       if (from === walletLower) {
-        tokensOut.push({ symbol: config.nativeToken.symbol, amount: nativeValue, decimals: 18 });
+        tokensOut.push({ symbol: nativeTokenSymbol, amount: nativeValue, decimals: 18 });
       }
     }
 
@@ -601,7 +630,7 @@ const styles = {
   logo: {
     width: '48px',
     height: '48px',
-    background: config.theme.gradient,
+    background: DEFAULT_CONFIG.theme.gradient,
     borderRadius: '12px',
     display: 'flex',
     alignItems: 'center',
@@ -655,7 +684,7 @@ const styles = {
   },
   button: {
     padding: '14px 24px',
-    background: config.theme.gradient,
+    background: DEFAULT_CONFIG.theme.gradient,
     border: 'none',
     borderRadius: '10px',
     color: '#000',
@@ -919,6 +948,11 @@ function SuccessModal({ isOpen, stats, onClose }) {
 // MAIN COMPONENT
 // ============================================================================
 export default function Home() {
+  // Chain selection
+  const [chains, setChains] = useState([]);
+  const [selectedChainId, setSelectedChainId] = useState('celo');
+  const [config, setConfig] = useState(DEFAULT_CONFIG);
+
   const [address, setAddress] = useState('');
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -938,6 +972,46 @@ export default function Home() {
   const [endDate, setEndDate] = useState(() => {
     return new Date().toISOString().split('T')[0];
   });
+
+  // Fetch available chains on mount
+  useEffect(() => {
+    fetch(CHAINS_API)
+      .then(res => res.json())
+      .then(data => {
+        if (data.chains && data.chains.length > 0) {
+          setChains(data.chains);
+          // Update config from first chain
+          const firstChain = data.chains[0];
+          updateConfigFromChain(firstChain);
+        }
+      })
+      .catch(err => console.error('Failed to load chains:', err));
+  }, []);
+
+  // Update config when chain changes
+  const updateConfigFromChain = (chain) => {
+    setConfig({
+      ...DEFAULT_CONFIG,
+      ...chain,
+      cacheKeyPrefix: chain.id,
+      addressPlaceholder: '0x...',
+      validateAddress: (addr) => /^0x[a-fA-F0-9]{40}$/.test(addr),
+      txUrl: (hash) => `${chain.explorerUrl}/tx/${hash}`,
+      addressUrl: (addr) => `${chain.explorerUrl}/address/${addr}`,
+    });
+  };
+
+  const handleChainChange = (chainId) => {
+    setSelectedChainId(chainId);
+    const chain = chains.find(c => c.id === chainId);
+    if (chain) {
+      updateConfigFromChain(chain);
+      // Clear transactions when chain changes
+      setTransactions([]);
+      setStats(null);
+      setShowSuccess(false);
+    }
+  };
   // Transaction type filters - Awaken Tax compatible tags
   const [txTypeFilters, setTxTypeFilters] = useState({
     swap: true,
@@ -1018,7 +1092,7 @@ export default function Home() {
         batch++;
         setProgress(p => ({ ...p, status: `Fetching batch ${batch}...` }));
 
-        const response = await fetch(`${EXPLORER_API}/${trimmedAddress}?limit=100&skip=${skip}`);
+        const response = await fetch(`${EXPLORER_API}/${trimmedAddress}?limit=100&skip=${skip}&chain=${selectedChainId}`);
 
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
@@ -1090,7 +1164,7 @@ export default function Home() {
 
       // Parse all transactions with token transfer data
       setProgress(p => ({ ...p, status: `Processing ${allRawTxs.length} transactions with token data...` }));
-      const allTxs = parseTransactionsWithTokens(allRawTxs, allTokenTransfers, trimmedAddress);
+      const allTxs = parseTransactionsWithTokens(allRawTxs, allTokenTransfers, trimmedAddress, config.nativeToken.symbol);
 
       if (cancelRef.current) {
         setLoading(false);
@@ -1164,7 +1238,7 @@ export default function Home() {
         for (let i = 0; i < priceRequests.length; i += 10) {
           if (cancelRef.current) break;
           const batch = priceRequests.slice(i, i + 10);
-          const result = await fetchPricesBatch(batch);
+          const result = await fetchPricesBatch(batch, selectedChainId);
           if (result.missing) {
             missingPrices.push(...result.missing);
           }
@@ -1276,7 +1350,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, [address, startDate, endDate, txTypeFilters]);
+  }, [address, startDate, endDate, txTypeFilters, selectedChainId, config]);
 
   const downloadCSV = useCallback(() => {
     const csv = generateCSV(transactions);
@@ -1325,6 +1399,40 @@ export default function Home() {
               </p>
             </div>
           </div>
+          {/* Chain Selector */}
+          {chains.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }} className="responsive-chain-selector">
+              <label style={{ fontSize: '13px', color: '#71717a' }}>Chain:</label>
+              <select
+                value={selectedChainId}
+                onChange={(e) => handleChainChange(e.target.value)}
+                disabled={loading}
+                style={{
+                  background: '#09090b',
+                  border: '1px solid #27272a',
+                  borderRadius: '8px',
+                  padding: '10px 32px 10px 12px',
+                  color: '#fafafa',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                  opacity: loading ? 0.5 : 1,
+                  outline: 'none',
+                  appearance: 'none',
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 10px center',
+                }}
+                className="responsive-chain-select"
+              >
+                {chains.map(chain => (
+                  <option key={chain.id} value={chain.id}>
+                    {chain.name} ({chain.symbol})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </header>
 
         {/* Input Card */}

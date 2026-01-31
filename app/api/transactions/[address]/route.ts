@@ -2,7 +2,7 @@
 // Generic transaction fetching API - uses chain.config.ts for chain-specific logic
 // Fetches both normal transactions AND token transfers (ERC20 events)
 
-import config from '../../../../chain.config';
+import { getChain, defaultChain } from '../../../../chains';
 
 export async function GET(request: Request, { params }: { params: Promise<{ address: string }> }) {
   const resolvedParams = await params;
@@ -10,6 +10,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ addr
   const { searchParams } = new URL(request.url);
   const limit = parseInt(searchParams.get('limit') || '100');
   const skip = parseInt(searchParams.get('skip') || '0');
+  const chainId = searchParams.get('chain') || 'celo';
+
+  // Get chain config
+  const config = getChain(chainId) || defaultChain;
 
   // Validate address using chain config
   if (!address || !config.validateAddress(address)) {
@@ -65,6 +69,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ addr
       tokenTransfers: markedTokenTransfers,
       paging,
       chain: config.name,
+      chainId: config.id,
     });
 
   } catch (error) {

@@ -2,7 +2,7 @@
 // Generic pricing API using DefiLlama
 // Works for ANY chain supported by DefiLlama
 
-import config from '../../../chain.config';
+import { getChain, defaultChain, ChainConfig } from '../../../chains';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -182,6 +182,7 @@ function getUnderlyingToken(symbol: string): { symbol: string; coingeckoId?: str
 
 // Main price fetching function
 async function getHistoricalPrice(
+  config: ChainConfig,
   tokenSymbolOrAddress: string,
   date: string,
   timestampMs?: number,
@@ -258,11 +259,14 @@ async function getHistoricalPrice(
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { requests } = body;
+    const { requests, chain: chainId } = body;
 
     if (!requests || !Array.isArray(requests)) {
       return Response.json({ error: 'requests array required' }, { status: 400 });
     }
+
+    // Get chain config
+    const config = getChain(chainId || 'celo') || defaultChain;
 
     const results: Record<string, number | null> = {};
     const sources: Record<string, string> = {};
@@ -275,7 +279,7 @@ export async function POST(request: Request) {
       // Derive date from timestamp if not provided (needed for Pyth/CoinGecko fallbacks)
       const dateStr = date || (timestamp ? new Date(timestamp).toISOString().split('T')[0] : null);
 
-      const result = await getHistoricalPrice(token, dateStr || '', timestamp, address, coingeckoId);
+      const result = await getHistoricalPrice(config, token, dateStr || '', timestamp, address, coingeckoId);
 
       if (result) {
         results[key] = result.price;
@@ -312,6 +316,10 @@ export async function GET(request: Request) {
   const date = searchParams.get('date');
   const timestampParam = searchParams.get('timestamp');
   const coingeckoId = searchParams.get('coingeckoId');
+  const chainId = searchParams.get('chain') || 'celo';
+
+  // Get chain config
+  const config = getChain(chainId) || defaultChain;
 
   if (!token && !address) {
     return Response.json({ error: 'token or address required' }, { status: 400 });
@@ -323,6 +331,7 @@ export async function GET(request: Request) {
     : date || new Date().toISOString().split('T')[0];
 
   const result = await getHistoricalPrice(
+    config,
     token || '',
     dateStr,
     timestampMs,
