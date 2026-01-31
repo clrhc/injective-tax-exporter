@@ -2,6 +2,7 @@
 // Export all chain configurations
 
 import { ChainConfig } from './types';
+import astar from './astar';
 import aurora from './aurora';
 import bob from './bob';
 import celo from './celo';
@@ -11,6 +12,7 @@ import fuse from './fuse';
 
 // All available chains
 export const chains: Record<string, ChainConfig> = {
+  astar,
   aurora,
   bob,
   celo,

@@ -208,8 +208,8 @@ Test each one. If API works, implement and mark [x]. If no API, mark [!].
 **Priority 1 - Likely have BlockScout APIs:**
 - [x] Aurora - `explorer.aurora.dev/api` - Tested with 0x88928ff265a144aef2c5e228d536d9e477a68cfc (50 swaps, 0% missing prices)
 - [x] Fuse - `explorer.fuse.io/api` - Tested with 0x459dc0dcb82c7e3c791041f9cdb5f797b6459315 (11 swaps, 7.5% missing prices - LP tokens)
+- [x] Astar - `astar.blockscout.com/api` - Tested with 0x2412f8511ea0cc48a22b6e1926c51916e3fccae2 (84 swaps, 0% missing prices)
 - [ ] Evmos
-- [ ] Astar
 - [ ] Shiden
 - [ ] Milkomeda
 - [ ] Milkomeda A1
