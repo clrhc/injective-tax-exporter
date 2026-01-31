@@ -195,35 +195,35 @@ Track progress here. Mark [x] when fully tested and working, [!] if no working A
 
 #### Confirmed NOT Working (No free API)
 - [!] Kava - No public API, returns 403/404
+- [!] Moonbeam - Moonscan deprecated V1 API
+- [!] Moonriver - Moonscan deprecated V1 API
+- [!] Boba - Returns 403 Forbidden
+- [!] Palm - Returns 404
+- [!] Meter - Returns HTML, no JSON API
+- [!] Velas - Returns HTML, no JSON API
 
 #### DefiLlama EVM Chains To Add (NOT in exclusion list)
 Test each one. If API works, implement and mark [x]. If no API, mark [!].
 
 **Priority 1 - Likely have BlockScout APIs:**
 - [x] Aurora - `explorer.aurora.dev/api` - Tested with 0x88928ff265a144aef2c5e228d536d9e477a68cfc (50 swaps, 0% missing prices)
-- [ ] Moonbeam
-- [ ] Moonriver
-- [ ] Boba
+- [x] Fuse - `explorer.fuse.io/api` - Tested with 0x459dc0dcb82c7e3c791041f9cdb5f797b6459315 (11 swaps, 7.5% missing prices - LP tokens)
 - [ ] Evmos
 - [ ] Astar
 - [ ] Shiden
-- [ ] Palm
 - [ ] Milkomeda
 - [ ] Milkomeda A1
 - [ ] Oasis
 - [ ] Heco
 - [ ] RSK
 - [ ] Telos
-- [x] Fuse - `explorer.fuse.io/api` - Tested with 0x459dc0dcb82c7e3c791041f9cdb5f797b6459315 (11 swaps, 7.5% missing prices - LP tokens)
 - [ ] Elastos
 - [ ] Cube
 - [ ] Syscoin
-- [ ] Meter
 - [ ] ThunderCore
 - [ ] Nahmii
 - [ ] Godwoken
 - [ ] GodwokenV1
-- [ ] Velas
 - [ ] EnergyWeb
 - [ ] CLV
 - [ ] Callisto
