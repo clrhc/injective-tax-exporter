@@ -214,7 +214,7 @@ Test each one. If API works, implement and mark [x]. If no API, mark [!].
 - [ ] Heco
 - [ ] RSK
 - [ ] Telos
-- [ ] Fuse
+- [x] Fuse - `explorer.fuse.io/api` - Tested with 0x459dc0dcb82c7e3c791041f9cdb5f797b6459315 (11 swaps, 7.5% missing prices - LP tokens)
 - [ ] Elastos
 - [ ] Cube
 - [ ] Syscoin
@@ -455,7 +455,13 @@ curl -s "http://localhost:3000/api/export?address={wallet}&chain={chainId}&limit
 2. Export from `chains/index.ts`
 3. Test with real wallet (swaps + transfers)
 4. Verify prices fetch correctly
-5. Commit and push:
+5. Commit and push to remote:
+
+**IMPORTANT: Always push to remote after committing!**
+```bash
+git push origin multi-chain
+```
+Remote: https://github.com/clrhc/injective-tax-exporter/tree/multi-chain
 ```bash
 git add chains/{chainname}.ts chains/index.ts CLAUDE.md
 git commit -m "$(cat <<'EOF'

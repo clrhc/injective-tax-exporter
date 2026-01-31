@@ -4,11 +4,13 @@
 import { ChainConfig } from './types';
 import aurora from './aurora';
 import celo from './celo';
+import fuse from './fuse';
 
 // All available chains
 export const chains: Record<string, ChainConfig> = {
   aurora,
   celo,
+  fuse,
 };
 
 // Get chain by ID
