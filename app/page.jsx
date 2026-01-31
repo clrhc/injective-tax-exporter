@@ -1202,7 +1202,23 @@ export default function Home() {
         if (txs.length === 0) {
           hasMore = false;
         } else {
+          let reachedStartDate = false;
           for (const tx of txs) {
+            const txTimestamp = tx.blockTimestamp || tx.block_timestamp || tx.timestamp;
+            const txDate = txTimestamp ? new Date(txTimestamp).toISOString().split('T')[0] : null;
+
+            // Check if transaction is older than start date - stop fetching
+            if (txDate && startDate && txDate < startDate) {
+              reachedStartDate = true;
+              console.log(`Stopping fetch: tx date ${txDate} < start date ${startDate}`);
+              break;
+            }
+
+            // Skip transactions after end date (don't process but keep fetching)
+            if (txDate && endDate && txDate > endDate) {
+              continue;
+            }
+
             const txHash = tx.hash || tx.txHash || tx.id;
 
             // Skip duplicates
@@ -1217,13 +1233,20 @@ export default function Home() {
             allTxs.push(...parsed);
           }
 
+          // Stop fetching if we've reached transactions older than startDate
+          if (reachedStartDate) {
+            hasMore = false;
+          }
+
           skip += 100;
           if (txs.length < 100) hasMore = false;
 
           setProgress({
             current: allTxs.length,
             total: totalEstimate || allTxs.length,
-            status: `Processing ${allTxs.length.toLocaleString()} transactions...`,
+            status: startDate
+              ? `Fetching transactions from ${startDate}...`
+              : `Processing ${allTxs.length.toLocaleString()} transactions...`,
           });
 
           // Small delay to prevent rate limiting
@@ -1366,12 +1389,21 @@ export default function Home() {
       const tagCounts = {};
       let totalPnl = 0;
       let missingPriceCount = 0;
+      let timeDiffCount = 0;
+      const timeDiffList = [];
       finalTxs.forEach(tx => {
         const tag = tx.tag || '';
         tagCounts[tag] = (tagCounts[tag] || 0) + 1;
 
         if (tx.missingPrice) {
           missingPriceCount++;
+        }
+        if (tx.priceTimeDiff && tx.priceTimeDiff > 1) {
+          timeDiffCount++;
+          const token = tx.receivedCurrency || tx.sentCurrency;
+          if (token) {
+            timeDiffList.push(`${token} on ${tx.dateStr} (${tx.priceTimeDiff}h away)`);
+          }
         }
         if (tx.pnl && tx.pnl !== '') {
           totalPnl += parseFloat(tx.pnl) || 0;
@@ -1387,7 +1419,9 @@ export default function Home() {
         uniqueTxs: seenHashes.size,
         totalPnl,
         missingPriceCount,
-        missingPrices: uniqueMissing
+        missingPrices: uniqueMissing,
+        timeDiffCount,
+        timeDiffList: [...new Set(timeDiffList)],
       });
       setShowSuccess(true);
 
@@ -1634,6 +1668,12 @@ export default function Home() {
                 <div style={styles.statLabel}>Missing Prices</div>
               </div>
             )}
+            {stats.timeDiffCount > 0 && (
+              <div style={{ ...styles.statCard, borderColor: '#3b82f6', background: 'rgba(59, 130, 246, 0.1)' }}>
+                <div style={{ ...styles.statValue, color: '#3b82f6' }}>{stats.timeDiffCount}</div>
+                <div style={styles.statLabel}>Approx Prices</div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1671,6 +1711,46 @@ export default function Home() {
                     ))}
                     {stats.missingPrices.length > 50 && (
                       <div style={{ color: '#f59e0b' }}>...and {stats.missingPrices.length - 50} more</div>
+                    )}
+                  </div>
+                </details>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Warning for approximate prices (time diff) */}
+        {stats?.timeDiffList?.length > 0 && (
+          <div style={{
+            padding: '16px 20px',
+            background: 'rgba(59, 130, 246, 0.1)',
+            border: '1px solid rgba(59, 130, 246, 0.3)',
+            borderRadius: '12px',
+            marginBottom: '24px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14"/>
+              </svg>
+              <div>
+                <div style={{ fontWeight: '600', color: '#3b82f6', marginBottom: '4px' }}>
+                  Approximate Prices
+                </div>
+                <div style={{ color: '#a1a1aa', fontSize: '14px', lineHeight: '1.5' }}>
+                  {stats.timeDiffCount} transactions use prices from trades that occurred hours away from the actual transaction.
+                  These prices may not reflect the exact value at transaction time.
+                </div>
+                <details style={{ marginTop: '8px' }}>
+                  <summary style={{ color: '#3b82f6', cursor: 'pointer', fontSize: '13px' }}>
+                    Show approximate prices ({stats.timeDiffList.length})
+                  </summary>
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#71717a', maxHeight: '120px', overflow: 'auto' }}>
+                    {stats.timeDiffList.slice(0, 50).map((item, i) => (
+                      <div key={i}>{item}</div>
+                    ))}
+                    {stats.timeDiffList.length > 50 && (
+                      <div style={{ color: '#3b82f6' }}>...and {stats.timeDiffList.length - 50} more</div>
                     )}
                   </div>
                 </details>

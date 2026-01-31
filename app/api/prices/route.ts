@@ -109,8 +109,17 @@ async function getBlockTimestamp(blockHeight: number): Promise<number | null> {
   }
 }
 
+// Cache markets for 5 minutes to avoid repeated API calls
+let marketsCache: { data: MarketInfo[]; timestamp: number } | null = null;
+const MARKETS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 // Fetch all spot markets from Injective LCD (includes all memecoins)
 async function getAllMarkets(): Promise<MarketInfo[]> {
+  // Return cached markets if still valid
+  if (marketsCache && Date.now() - marketsCache.timestamp < MARKETS_CACHE_TTL) {
+    return marketsCache.data;
+  }
+
   try {
     // Use LCD endpoint which has ALL markets including memecoins
     const url = `${INJECTIVE_LCD_API}/injective/exchange/v1beta1/spot/markets?status=Active`;
@@ -119,10 +128,10 @@ async function getAllMarkets(): Promise<MarketInfo[]> {
       cache: 'no-store',
     });
 
-    if (!response.ok) return [];
+    if (!response.ok) return marketsCache?.data || [];
 
     const data = await response.json();
-    if (!data.markets) return [];
+    if (!data.markets) return marketsCache?.data || [];
 
     // Map to simplified structure and identify quote symbols
     return data.markets.map((m: any) => {
