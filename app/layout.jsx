@@ -1,8 +1,8 @@
 import './globals.css'
 
 export const metadata = {
-  title: 'Injective Tax Exporter | Awaken Tax',
-  description: 'Export your Injective transactions in Awaken Tax CSV format',
+  title: 'Kujira Tax Exporter | Awaken Tax',
+  description: 'Export your Kujira transactions in Awaken Tax CSV format',
 }
 
 export default function RootLayout({ children }) {

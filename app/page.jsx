@@ -3,8 +3,8 @@ import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 
 const EXPLORER_API = '/api/transactions';
 const PRICES_API = '/api/prices';
-const TOKEN_LIST_URL = 'https://raw.githubusercontent.com/InjectiveLabs/injective-lists/master/json/tokens/mainnet.json';
-const TOKEN_CACHE_KEY = 'inj_token_cache_v2';
+const TOKEN_LIST_URL = 'https://raw.githubusercontent.com/nicholasgodfreyclarke/kujira-lists/refs/heads/main/tokens.json';
+const TOKEN_CACHE_KEY = 'kujira_token_cache_v1';
 const ITEMS_PER_PAGE = 25;
 
 // ============================================================================
@@ -45,7 +45,7 @@ function getPrice(token, date) {
   return price === undefined || price === null ? null : price;
 }
 
-// Get price source - returns 'injective-dex', 'pyth', or null
+// Get price source - returns 'pyth' or null
 function getPriceSource(token, date) {
   const key = `${token.toUpperCase()}-${date}`;
   return sessionPrices.sources?.[key] || null;
@@ -201,19 +201,21 @@ function persistTokenCache(map) {
 
 // Common tokens hardcoded for instant resolution
 const COMMON_TOKENS = {
-  'inj': { symbol: 'INJ', decimals: 18 },
-  'peggy0xdac17f958d2ee523a2206206994597c13d831ec7': { symbol: 'USDT', decimals: 6 },
-  'peggy0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': { symbol: 'USDC', decimals: 6 },
-  'peggy0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': { symbol: 'WBTC', decimals: 8 },
-  'peggy0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': { symbol: 'WETH', decimals: 18 },
-  'peggy0x7d1afa7b718fb893db30a3abc0cfc608aacfebb0': { symbol: 'MATIC', decimals: 18 },
-  'peggy0x1f9840a85d5af5bf1d1762f925bdaddc4201f984': { symbol: 'UNI', decimals: 18 },
-  'peggy0x514910771af9ca656af840dff83e8264ecf986ca': { symbol: 'LINK', decimals: 18 },
-  'peggy0x6b175474e89094c44da98b954eedeac495271d0f': { symbol: 'DAI', decimals: 18 },
+  'ukuji': { symbol: 'KUJI', decimals: 6 },
+  // axlUSDC
+  'ibc/295548a78785a1007f232de286149a6ff512f180af5657780fc89c009e2c348f': { symbol: 'axlUSDC', decimals: 6 },
+  // ATOM
+  'ibc/27394fb092d2eccd56123c74f36e4c1f926001ceada9ca97ea622b25f41e5eb2': { symbol: 'ATOM', decimals: 6 },
+  // OSMO
+  'ibc/47bd209179859cde4a2806763d7189b6e6fe13a17880fe2b42de1e6c1e329e23': { symbol: 'OSMO', decimals: 6 },
+  // USK (Kujira stablecoin)
+  'factory/kujira1qk00h5atutpsv900x202pxx42npjr9thg58dnqpa72f2p7m2luase444a7/uusk': { symbol: 'USK', decimals: 6 },
+  // MNTA
+  'factory/kujira1643jxg8wasy5cfcn7xm8rd742yeazcksqlg4d7/umnta': { symbol: 'MNTA', decimals: 6 },
 };
 
 function getTokenInfo(denom) {
-  if (!denom) return { symbol: 'INJ', decimals: 18 };
+  if (!denom) return { symbol: 'KUJI', decimals: 6 };
   const key = denom.toLowerCase();
 
   // Check common tokens first
@@ -223,23 +225,29 @@ function getTokenInfo(denom) {
   const cached = tokenCache.data?.[key];
   if (cached) return cached;
 
-  // Parse denom string
-  if (denom.startsWith('peggy0x')) {
-    const addr = denom.slice(5);
-    return { symbol: `${addr.slice(0, 6)}...${addr.slice(-4)}`, decimals: 18 };
+  // Parse denom string - Kujira uses standard Cosmos denoms
+  // Native token
+  if (denom === 'ukuji') {
+    return { symbol: 'KUJI', decimals: 6 };
   }
+  // IBC tokens
   if (denom.startsWith('ibc/')) {
     return { symbol: `IBC/${denom.slice(4, 10)}`, decimals: 6 };
   }
+  // Factory tokens (e.g., factory/kujira1.../umnta)
   if (denom.startsWith('factory/')) {
     const parts = denom.split('/');
-    return { symbol: (parts[parts.length - 1] || 'TOKEN').toUpperCase(), decimals: 18 };
+    const lastPart = parts[parts.length - 1] || 'TOKEN';
+    // Remove 'u' prefix if present (micro denomination)
+    const symbol = lastPart.startsWith('u') ? lastPart.slice(1).toUpperCase() : lastPart.toUpperCase();
+    return { symbol, decimals: 6 };
   }
-  if (denom.startsWith('share')) {
-    return { symbol: 'LP-TOKEN', decimals: 18 };
+  // CW20 contract addresses
+  if (denom.startsWith('kujira1')) {
+    return { symbol: `CW20/${denom.slice(7, 13)}`, decimals: 6 };
   }
 
-  return { symbol: denom.length > 12 ? `${denom.slice(0, 8)}...` : denom.toUpperCase(), decimals: 18 };
+  return { symbol: denom.length > 12 ? `${denom.slice(0, 8)}...` : denom.toUpperCase(), decimals: 6 };
 }
 
 function formatAmount(amount, denom) {
@@ -255,10 +263,10 @@ function formatAmount(amount, denom) {
 }
 
 // ============================================================================
-// TRANSACTION PARSING - Comprehensive handler for all Injective message types
+// TRANSACTION PARSING - Comprehensive handler for Kujira/Cosmos message types
 // ============================================================================
 
-// Helper: Parse coin amount from event attribute value like "1000000inj" or "500000peggy0x..."
+// Helper: Parse coin amount from event attribute value like "1000000ukuji" or "500000ibc/..."
 function parseCoinFromString(coinStr) {
   if (!coinStr) return null;
   const match = coinStr.match(/^(\d+)(.+)$/);
@@ -770,7 +778,7 @@ const styles = {
   logo: {
     width: '48px',
     height: '48px',
-    background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 50%, #00f2fe 100%)',
+    background: 'linear-gradient(135deg, #E8524A 0%, #F97316 50%, #E8524A 100%)',
     borderRadius: '12px',
     display: 'flex',
     alignItems: 'center',
@@ -824,7 +832,7 @@ const styles = {
   },
   button: {
     padding: '14px 24px',
-    background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)',
+    background: 'linear-gradient(135deg, #E8524A 0%, #F97316 100%)',
     border: 'none',
     borderRadius: '10px',
     color: '#000',
@@ -1031,8 +1039,8 @@ function LoadingModal({ isOpen, progress, onCancel }) {
             />
             <defs>
               <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#00f2fe" />
-                <stop offset="100%" stopColor="#4facfe" />
+                <stop offset="0%" stopColor="#E8524A" />
+                <stop offset="100%" stopColor="#F97316" />
               </linearGradient>
             </defs>
           </svg>
@@ -1155,8 +1163,8 @@ export default function Home() {
   const fetchTransactions = useCallback(async () => {
     const trimmedAddress = address.trim();
 
-    if (!trimmedAddress || !trimmedAddress.startsWith('inj1') || trimmedAddress.length !== 42) {
-      setError('Please enter a valid Injective address (starts with inj1, 42 characters)');
+    if (!trimmedAddress || !trimmedAddress.startsWith('kujira1') || trimmedAddress.length < 43) {
+      setError('Please enter a valid Kujira address (starts with kujira1)');
       return;
     }
 
@@ -1173,7 +1181,7 @@ export default function Home() {
       // Ensure tokens are loaded
       const tokenData = await loadTokensGlobal();
       setTokenCount(Object.keys(tokenData || {}).length);
-      setProgress(p => ({ ...p, status: 'Connecting to Injective...' }));
+      setProgress(p => ({ ...p, status: 'Connecting to Kujira...' }));
 
       const allTxs = [];
       const rawTxs = []; // Keep raw transactions for swap price extraction
@@ -1314,8 +1322,8 @@ export default function Home() {
           }
         }
 
-        // Fetch prices from Injective DEX trades (chain-specific) with Pyth fallback
-        setProgress(p => ({ ...p, status: `Fetching ${priceRequests.length} prices from Injective DEX...` }));
+        // Fetch prices from Pyth
+        setProgress(p => ({ ...p, status: `Fetching ${priceRequests.length} prices from Pyth...` }));
 
         // Batch into groups of 10 for CoinGecko rate limits
         for (let i = 0; i < priceRequests.length; i += 10) {
@@ -1350,7 +1358,7 @@ export default function Home() {
           // Track price sources and time diffs for this transaction
           const recvSource = tx.receivedCurrency ? getPriceSource(tx.receivedCurrency, tx.dateStr) : null;
           const sentSource = tx.sentCurrency ? getPriceSource(tx.sentCurrency, tx.dateStr) : null;
-          tx.priceSource = recvSource || sentSource; // 'injective-dex' or 'pyth'
+          tx.priceSource = recvSource || sentSource; // 'pyth'
 
           // Check for time difference warnings
           const recvTimeDiff = tx.receivedCurrency ? getPriceTimeDiff(tx.receivedCurrency, tx.dateStr) : null;
@@ -1441,7 +1449,7 @@ export default function Home() {
     const link = document.createElement('a');
     const timestamp = new Date().toISOString().slice(0, 10);
     link.href = URL.createObjectURL(blob);
-    link.download = `injective-${address.slice(0, 10)}-${timestamp}-awaken.csv`;
+    link.download = `kujira-${address.slice(0, 12)}-${timestamp}-awaken.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
   }, [transactions, address]);
@@ -1469,13 +1477,13 @@ export default function Home() {
         {/* Header */}
         <header style={styles.header} className="responsive-header">
           <div style={styles.headerLeft} className="responsive-header-left">
-            <div style={styles.logo} className="responsive-logo">INJ</div>
+            <div style={styles.logo} className="responsive-logo">KUJI</div>
             <div>
-              <h1 style={styles.title} className="responsive-title">Injective Tax Exporter</h1>
+              <h1 style={styles.title} className="responsive-title">Kujira Tax Exporter</h1>
               <p style={styles.subtitle} className="responsive-subtitle">
                 Export transaction history for Awaken Tax
                 {tokenCount > 0 && (
-                  <span style={{ color: '#4facfe', marginLeft: '8px' }}>
+                  <span style={{ color: '#F97316', marginLeft: '8px' }}>
                     {tokenCount} tokens
                   </span>
                 )}
@@ -1492,7 +1500,7 @@ export default function Home() {
               value={address}
               onChange={e => setAddress(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="inj1..."
+              placeholder="kujira1..."
               disabled={loading}
               style={{
                 ...styles.input,
@@ -1777,7 +1785,7 @@ export default function Home() {
                 className="responsive-filter-button"
                 style={{
                   ...styles.filterButton,
-                  ...(filter === 'all' ? { background: 'rgba(79, 172, 254, 0.15)', border: '1px solid #4facfe', color: '#4facfe' } : {}),
+                  ...(filter === 'all' ? { background: 'rgba(79, 172, 254, 0.15)', border: '1px solid #F97316', color: '#F97316' } : {}),
                 }}
               >
                 All ({stats.total})
@@ -1981,7 +1989,7 @@ export default function Home() {
                         </td>
                         <td style={{ ...styles.td, textAlign: 'center' }}>
                           <a
-                            href={`https://explorer.injective.network/transaction/${tx.txHash}`}
+                            href={`https://finder.kujira.network/kaiyo-1/tx/${tx.txHash}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             style={styles.link}
@@ -2052,7 +2060,7 @@ export default function Home() {
                         {tx.notes || '—'}
                       </span>
                       <a
-                        href={`https://explorer.injective.network/transaction/${tx.txHash}`}
+                        href={`https://finder.kujira.network/kaiyo-1/tx/${tx.txHash}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="mobile-tx-link"
@@ -2085,7 +2093,7 @@ export default function Home() {
               No Transactions Yet
             </h3>
             <p style={{ color: '#52525b', margin: 0, fontSize: '15px', maxWidth: '320px', marginInline: 'auto' }} className="responsive-empty-text">
-              Enter your Injective wallet address above to fetch and export your transaction history
+              Enter your Kujira wallet address above to fetch and export your transaction history
             </p>
           </div>
         )}
@@ -2098,13 +2106,13 @@ export default function Home() {
               href="https://awaken.tax"
               target="_blank"
               rel="noopener noreferrer"
-              style={{ color: '#4facfe', textDecoration: 'none' }}
+              style={{ color: '#F97316', textDecoration: 'none' }}
             >
               Awaken Tax
             </a>
           </p>
           <p style={{ fontSize: '12px', color: '#3f3f46', margin: 0 }}>
-            Prices from Injective DEX trades (chain-specific). <span style={{ color: '#f59e0b' }}>*</span> = Pyth fallback (cross-chain).
+            Prices from Pyth Network. Some tokens may not have price data available.
           </p>
           <p style={{ fontSize: '12px', color: '#3f3f46', margin: '4px 0 0' }}>
             This tool is not financial advice.
