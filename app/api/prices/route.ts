@@ -12,7 +12,7 @@ const PYTH_API = 'https://benchmarks.pyth.network';
 
 interface PriceResult {
   price: number;
-  source: 'defillama' | 'pyth' | 'coingecko';
+  source: 'defillama' | 'pyth' | 'coingecko' | 'dex';
   confidence?: number;
   timestamp?: number;
 }
@@ -119,6 +119,97 @@ async function getCoinGeckoPrice(coinId: string, date: string): Promise<number |
 
     const data = await res.json();
     return data.market_data?.current_price?.usd ?? null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Get price from on-chain DEX (UniswapV2 style)
+async function getDexPrice(
+  config: ChainConfig,
+  tokenAddress: string,
+  nativeTokenPriceUsd: number
+): Promise<PriceResult | null> {
+  if (!config.dex || !config.nativeToken.wrappedAddress) return null;
+
+  const { rpcUrl, factoryAddress } = config.dex;
+  const wrappedNative = config.nativeToken.wrappedAddress.toLowerCase();
+
+  try {
+    // Get pair address from factory
+    const tokenLower = tokenAddress.toLowerCase();
+    const getPairData = `0xe6a43905${tokenLower.slice(2).padStart(64, '0')}${wrappedNative.slice(2).padStart(64, '0')}`;
+
+    const pairRes = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'eth_call',
+        params: [{ to: factoryAddress, data: getPairData }, 'latest'],
+        id: 1,
+      }),
+    });
+
+    const pairData = await pairRes.json();
+    const pairAddress = '0x' + pairData.result?.slice(-40);
+    if (!pairAddress || pairAddress === '0x0000000000000000000000000000000000000000') return null;
+
+    // Get reserves
+    const reservesRes = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'eth_call',
+        params: [{ to: pairAddress, data: '0x0902f1ac' }, 'latest'],
+        id: 2,
+      }),
+    });
+
+    const reservesData = await reservesRes.json();
+    if (!reservesData.result || reservesData.result === '0x') return null;
+
+    // Parse reserves (each is 32 bytes)
+    const reserve0 = BigInt('0x' + reservesData.result.slice(2, 66));
+    const reserve1 = BigInt('0x' + reservesData.result.slice(66, 130));
+
+    // Get token0 to determine order
+    const token0Res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'eth_call',
+        params: [{ to: pairAddress, data: '0x0dfe1681' }, 'latest'],
+        id: 3,
+      }),
+    });
+
+    const token0Data = await token0Res.json();
+    const token0 = '0x' + token0Data.result?.slice(-40).toLowerCase();
+
+    // Calculate price
+    let tokenReserve: bigint, nativeReserve: bigint;
+    if (token0 === tokenLower) {
+      tokenReserve = reserve0;
+      nativeReserve = reserve1;
+    } else {
+      tokenReserve = reserve1;
+      nativeReserve = reserve0;
+    }
+
+    if (tokenReserve === 0n) return null;
+
+    // Price in native token (both assumed 18 decimals for now)
+    const priceInNative = Number(nativeReserve) / Number(tokenReserve);
+    const priceInUsd = priceInNative * nativeTokenPriceUsd;
+
+    return {
+      price: priceInUsd,
+      source: 'dex',
+      confidence: 0.8, // Lower confidence for DEX prices
+    };
   } catch (e) {
     return null;
   }
@@ -269,6 +360,28 @@ async function getHistoricalPrice(
     const cgPrice = await getCoinGeckoPrice(config.nativeToken.coingeckoId, date);
     if (cgPrice !== null) {
       return { price: cgPrice, source: 'coingecko' };
+    }
+  }
+
+  // 7. Try on-chain DEX price (for meme coins, etc.)
+  if (config.dex && tokenAddress?.startsWith('0x')) {
+    // First get native token price
+    let nativePrice = 0;
+    if (config.nativeToken.coingeckoId) {
+      try {
+        const unixTs = Math.floor(timestamp / 1000);
+        const url = `${DEFILLAMA_API}/prices/historical/${unixTs}/coingecko:${config.nativeToken.coingeckoId}`;
+        const res = await fetch(url, { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          nativePrice = data.coins?.[`coingecko:${config.nativeToken.coingeckoId}`]?.price || 0;
+        }
+      } catch (e) { /* continue */ }
+    }
+
+    if (nativePrice > 0) {
+      const dexPrice = await getDexPrice(config, tokenAddress, nativePrice);
+      if (dexPrice) return dexPrice;
     }
   }
 

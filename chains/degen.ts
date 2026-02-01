@@ -112,6 +112,13 @@ const degen: ChainConfig = {
 
   nativeToken: NATIVE_TOKEN,
 
+  // On-chain DEX for meme coin pricing
+  dex: {
+    rpcUrl: 'https://rpc.degen.tips',
+    factoryAddress: '0xa5e57cab76caa09f66280f9eb1529ed1059e87ba',
+    type: 'uniswapV2',
+  },
+
   transactionApi: {
     baseUrl: 'https://explorer.degen.tips/api',
     buildUrl: (address, limit, offset) => {

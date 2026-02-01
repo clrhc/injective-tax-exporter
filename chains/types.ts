@@ -56,6 +56,13 @@ export interface ChainConfig {
     wrappedAddress?: string;
   };
 
+  // On-chain DEX for price lookups (optional)
+  dex?: {
+    rpcUrl: string;
+    factoryAddress: string;
+    type: 'uniswapV2'; // Can add more types later
+  };
+
   // API endpoints
   transactionApi: {
     baseUrl: string;
