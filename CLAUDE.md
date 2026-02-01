@@ -228,6 +228,11 @@ Test each one. If API works, implement and mark [x]. If no API, mark [!].
 - [ ] EnergyWeb
 - [ ] CLV
 
+**Priority 1 - Continued:**
+- [x] Mode - `explorer.mode.network/api` - API works, needs swap wallet test
+- [x] ZetaChain - `zetascan.com/api` - Tested with 0x6daf055c99883d920849d7022f2efabb13e2af57 (49 swaps, 0% missing prices)
+- [x] Degen - `explorer.degen.tips/api` - Tested with 0xba55bdbf959df826da6c35487eb15fad2164662d (72 swaps, prices work for DEGEN, meme coins missing)
+
 **Priority 2 - Other EVM chains:**
 - [ ] 0G
 - [ ] AILayer

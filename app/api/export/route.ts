@@ -324,7 +324,8 @@ function generateCSV(transactions: ParsedTx[]): string {
 // Fetch prices for transactions
 async function fetchPrices(
   transactions: ParsedTx[],
-  chainId: string
+  chainId: string,
+  baseUrl: string
 ): Promise<{ prices: Record<string, number | null>; sources: Record<string, string>; missing: string[] }> {
   const priceRequests: { token: string; timestamp: number; address?: string }[] = [];
   const seen = new Set<string>();
@@ -367,7 +368,7 @@ async function fetchPrices(
     const batch = priceRequests.slice(i, i + 10);
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/prices`, {
+      const response = await fetch(`${baseUrl}/api/prices`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ requests: batch, chain: chainId }),
@@ -415,7 +416,9 @@ function applyPrices(transactions: ParsedTx[], prices: Record<string, number | n
 }
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
+  const requestUrl = new URL(request.url);
+  const baseUrl = `${requestUrl.protocol}//${requestUrl.host}`;
+  const { searchParams } = requestUrl;
   const address = searchParams.get('address');
   const chainId = searchParams.get('chain') || 'celo';
   const startDate = searchParams.get('startDate');
@@ -506,7 +509,7 @@ export async function GET(request: Request) {
     // Fetch and apply prices
     let priceInfo = { prices: {}, sources: {}, missing: [] as string[] };
     if (!skipPrices && filteredTxs.length > 0) {
-      priceInfo = await fetchPrices(filteredTxs, chainId);
+      priceInfo = await fetchPrices(filteredTxs, chainId, baseUrl);
       applyPrices(filteredTxs, priceInfo.prices);
     }
 

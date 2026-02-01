@@ -6,10 +6,13 @@ import astar from './astar';
 import aurora from './aurora';
 import bob from './bob';
 import celo from './celo';
+import degen from './degen';
 import etc from './etc';
 import etherlink from './etherlink';
 import fuse from './fuse';
 import hemi from './hemi';
+import mode from './mode';
+import zetachain from './zetachain';
 
 // All available chains
 export const chains: Record<string, ChainConfig> = {
@@ -17,10 +20,13 @@ export const chains: Record<string, ChainConfig> = {
   aurora,
   bob,
   celo,
+  degen,
   etc,
   etherlink,
   fuse,
   hemi,
+  mode,
+  zetachain,
 };
 
 // Get chain by ID

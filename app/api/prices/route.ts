@@ -181,6 +181,15 @@ function getUnderlyingSymbol(symbol: string): string | null {
     return 'CELO';
   }
 
+  // ZetaChain ZRC-20 tokens: USDT.ETH -> USDT, USDC.ETH -> USDC, ETH.ETH -> ETH, BTC.BTC -> BTC
+  if (upper.includes('.')) {
+    const base = upper.split('.')[0];
+    // Map common ZRC-20 tokens to their underlying
+    if (['USDT', 'USDC', 'DAI', 'ETH', 'BTC', 'WETH', 'WBTC'].includes(base)) {
+      return base;
+    }
+  }
+
   return null;
 }
 
@@ -241,8 +250,22 @@ async function getHistoricalPrice(
     }
   }
 
-  // 6. Try native token's coingecko ID as last resort
+  // 6. Try native token's coingecko ID via DefiLlama (better for historical)
   if (upper === config.nativeToken.symbol.toUpperCase() && config.nativeToken.coingeckoId) {
+    try {
+      const unixTs = Math.floor(timestamp / 1000);
+      const url = `${DEFILLAMA_API}/prices/historical/${unixTs}/coingecko:${config.nativeToken.coingeckoId}`;
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        const coinData = data.coins?.[`coingecko:${config.nativeToken.coingeckoId}`];
+        if (coinData?.price) {
+          return { price: coinData.price, source: 'defillama', confidence: coinData.confidence };
+        }
+      }
+    } catch (e) { /* continue */ }
+
+    // Fall back to CoinGecko direct API
     const cgPrice = await getCoinGeckoPrice(config.nativeToken.coingeckoId, date);
     if (cgPrice !== null) {
       return { price: cgPrice, source: 'coingecko' };
