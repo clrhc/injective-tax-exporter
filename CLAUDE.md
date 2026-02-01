@@ -148,16 +148,29 @@ Then look up the underlying token's price instead.
 ## RALPH TASK: Add All DefiLlama-Supported Chains
 
 ### Goal
-Add EVERY EVM chain that DefiLlama supports that is NOT already covered by existing tax software.
+Add 30 MORE EVM chains that DefiLlama supports that are NOT already covered by existing tax software.
+**Current chain count: 11. Target: 41 chains total.**
+Stop when chains/index.ts has 41 chains.
+
+### Finding Explorer APIs
+For each chain, use WebSearch to find the correct explorer API:
+1. Search: "{chain name} blockchain explorer API blockscout etherscan"
+2. Look for BlockScout, Etherscan-style, or Routescan explorers
+3. Common patterns:
+   - `{chain}.blockscout.com/api`
+   - `explorer.{chain}.network/api`
+   - `{chain}scan.com/api`
+   - `api.{chain}scan.com/api`
 
 ### Process for Each Chain
-1. Check if chain has free public BlockScout/Etherscan-style API
+1. Use WebSearch to find the explorer API URL
 2. Test BOTH `action=txlist` AND `action=tokentx` endpoints
-3. If working, create a new `chain.config.ts` configuration
+3. If working, create a new `chains/{chain}.ts` configuration
 4. Test with a REAL wallet that has swaps/transfers
 5. Verify transactions parse correctly with token movements
 6. Verify prices fetch from DefiLlama
 7. Mark chain as DONE in the checklist below
+8. Commit and push after each successful chain
 
 ### EXCLUDED CHAINS (Already supported by tax software - DO NOT ADD)
 ```
