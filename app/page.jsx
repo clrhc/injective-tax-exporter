@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import JSZip from 'jszip';
 
 const EXPLORER_API = '/api/transactions';
 const PRICES_API = '/api/prices';
@@ -460,73 +461,117 @@ function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress, nativeT
       continue; // Nothing relevant
     }
 
+    // Determine if this is a multi-asset transaction (2+ tokens on either side)
+    const isMultiAsset = netTokensIn.length > 1 || netTokensOut.length > 1;
+
+    // Helper to format token amount
+    const fmtAmt = (amt) => amt.toFixed(8).replace(/\.?0+$/, '');
+
     // Create transaction records
     if (tag === 'swap') {
-      // For swaps, use NET token amounts (after canceling wrap/unwrap)
-      const sentToken = netTokensOut[0];
-      const recvToken = netTokensIn[0];
-
-      results.push({
-        ...baseTx,
-        sentQty: sentToken.amount.toFixed(8).replace(/\.?0+$/, ''),
-        sentCurrency: sentToken.symbol,
-        sentContractAddress: sentToken.contractAddress,
-        receivedQty: recvToken.amount.toFixed(8).replace(/\.?0+$/, ''),
-        receivedCurrency: recvToken.symbol,
-        receivedContractAddress: recvToken.contractAddress,
-        feeAmount: walletInitiated ? feeAmount : '',
-        feeCurrency: walletInitiated ? feeCurrency : '',
-        tag: 'swap',
-        notes: txNote || 'Swap',
-        asset: `${sentToken.symbol}→${recvToken.symbol}`,
-        amount: '',
-      });
-
-      // If there are additional tokens, create separate records
-      for (let i = 1; i < netTokensOut.length; i++) {
-        const t = netTokensOut[i];
+      if (!isMultiAsset) {
+        // Simple swap: 1 token in, 1 token out -> Standard CSV
+        const sentToken = netTokensOut[0];
+        const recvToken = netTokensIn[0];
         results.push({
           ...baseTx,
-          sentQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
-          sentCurrency: t.symbol,
-          sentContractAddress: t.contractAddress,
+          isMultiAsset: false,
+          sentQty: fmtAmt(sentToken.amount),
+          sentCurrency: sentToken.symbol,
+          sentContractAddress: sentToken.contractAddress,
+          receivedQty: fmtAmt(recvToken.amount),
+          receivedCurrency: recvToken.symbol,
+          receivedContractAddress: recvToken.contractAddress,
+          feeAmount: walletInitiated ? feeAmount : '',
+          feeCurrency: walletInitiated ? feeCurrency : '',
           tag: 'swap',
-          notes: txNote,
-          asset: t.symbol,
-          amount: `-${t.amount.toFixed(8).replace(/\.?0+$/, '')}`,
+          notes: txNote || 'Swap',
+          asset: `${sentToken.symbol}→${recvToken.symbol}`,
+          amount: '',
         });
-      }
-      for (let i = 1; i < netTokensIn.length; i++) {
-        const t = netTokensIn[i];
-        results.push({
-          ...baseTx,
-          receivedQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
-          receivedCurrency: t.symbol,
-          receivedContractAddress: t.contractAddress,
-          tag: 'swap',
-          notes: txNote,
-          asset: t.symbol,
-          amount: t.amount.toFixed(8).replace(/\.?0+$/, ''),
-        });
+      } else {
+        // Multi-asset swap: 2+ tokens on either side -> Multi-Asset CSV
+        // Handle overflow: if >2 tokens on a side, split into multiple rows
+        const maxRows = Math.max(Math.ceil(netTokensIn.length / 2), Math.ceil(netTokensOut.length / 2));
+
+        for (let rowIdx = 0; rowIdx < maxRows; rowIdx++) {
+          const recv1 = netTokensIn[rowIdx * 2] || null;
+          const recv2 = netTokensIn[rowIdx * 2 + 1] || null;
+          const sent1 = netTokensOut[rowIdx * 2] || null;
+          const sent2 = netTokensOut[rowIdx * 2 + 1] || null;
+
+          results.push({
+            ...baseTx,
+            isMultiAsset: true,
+            // First token pair
+            receivedQty: recv1 ? fmtAmt(recv1.amount) : '',
+            receivedCurrency: recv1?.symbol || '',
+            receivedContractAddress: recv1?.contractAddress || '',
+            sentQty: sent1 ? fmtAmt(sent1.amount) : '',
+            sentCurrency: sent1?.symbol || '',
+            sentContractAddress: sent1?.contractAddress || '',
+            // Second token pair
+            receivedQty2: recv2 ? fmtAmt(recv2.amount) : '',
+            receivedCurrency2: recv2?.symbol || '',
+            receivedContractAddress2: recv2?.contractAddress || '',
+            sentQty2: sent2 ? fmtAmt(sent2.amount) : '',
+            sentCurrency2: sent2?.symbol || '',
+            sentContractAddress2: sent2?.contractAddress || '',
+            // Fee only on first row
+            feeAmount: rowIdx === 0 && walletInitiated ? feeAmount : '',
+            feeCurrency: rowIdx === 0 && walletInitiated ? feeCurrency : '',
+            tag: 'swap',
+            notes: txNote || 'Swap',
+            asset: [recv1?.symbol, recv2?.symbol, sent1?.symbol, sent2?.symbol].filter(Boolean).join('/'),
+            amount: '',
+          });
+        }
       }
     } else if (tag === 'Transfer In') {
-      for (const t of netTokensIn) {
+      if (netTokensIn.length === 1) {
+        // Simple transfer in -> Standard CSV
+        const t = netTokensIn[0];
         results.push({
           ...baseTx,
-          receivedQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
+          isMultiAsset: false,
+          receivedQty: fmtAmt(t.amount),
           receivedCurrency: t.symbol,
           receivedContractAddress: t.contractAddress,
           tag: 'Transfer In',
           notes: txNote || 'Received',
           asset: t.symbol,
-          amount: t.amount.toFixed(8).replace(/\.?0+$/, ''),
+          amount: fmtAmt(t.amount),
         });
+      } else {
+        // Multi-asset transfer in -> Multi-Asset CSV
+        const maxRows = Math.ceil(netTokensIn.length / 2);
+        for (let rowIdx = 0; rowIdx < maxRows; rowIdx++) {
+          const recv1 = netTokensIn[rowIdx * 2] || null;
+          const recv2 = netTokensIn[rowIdx * 2 + 1] || null;
+          results.push({
+            ...baseTx,
+            isMultiAsset: true,
+            receivedQty: recv1 ? fmtAmt(recv1.amount) : '',
+            receivedCurrency: recv1?.symbol || '',
+            receivedContractAddress: recv1?.contractAddress || '',
+            receivedQty2: recv2 ? fmtAmt(recv2.amount) : '',
+            receivedCurrency2: recv2?.symbol || '',
+            receivedContractAddress2: recv2?.contractAddress || '',
+            tag: 'Transfer In',
+            notes: txNote || 'Received',
+            asset: [recv1?.symbol, recv2?.symbol].filter(Boolean).join('/'),
+            amount: '',
+          });
+        }
       }
     } else if (tag === 'Transfer Out') {
-      for (const t of netTokensOut) {
+      if (netTokensOut.length === 1) {
+        // Simple transfer out -> Standard CSV
+        const t = netTokensOut[0];
         results.push({
           ...baseTx,
-          sentQty: t.amount.toFixed(8).replace(/\.?0+$/, ''),
+          isMultiAsset: false,
+          sentQty: fmtAmt(t.amount),
           sentCurrency: t.symbol,
           sentContractAddress: t.contractAddress,
           feeAmount: walletInitiated ? feeAmount : '',
@@ -534,12 +579,36 @@ function parseTransactionsWithTokens(txs, tokenTransfers, walletAddress, nativeT
           tag: 'Transfer Out',
           notes: txNote || 'Sent',
           asset: t.symbol,
-          amount: `-${t.amount.toFixed(8).replace(/\.?0+$/, '')}`,
+          amount: `-${fmtAmt(t.amount)}`,
         });
+      } else {
+        // Multi-asset transfer out -> Multi-Asset CSV
+        const maxRows = Math.ceil(netTokensOut.length / 2);
+        for (let rowIdx = 0; rowIdx < maxRows; rowIdx++) {
+          const sent1 = netTokensOut[rowIdx * 2] || null;
+          const sent2 = netTokensOut[rowIdx * 2 + 1] || null;
+          results.push({
+            ...baseTx,
+            isMultiAsset: true,
+            sentQty: sent1 ? fmtAmt(sent1.amount) : '',
+            sentCurrency: sent1?.symbol || '',
+            sentContractAddress: sent1?.contractAddress || '',
+            sentQty2: sent2 ? fmtAmt(sent2.amount) : '',
+            sentCurrency2: sent2?.symbol || '',
+            sentContractAddress2: sent2?.contractAddress || '',
+            feeAmount: rowIdx === 0 && walletInitiated ? feeAmount : '',
+            feeCurrency: rowIdx === 0 && walletInitiated ? feeCurrency : '',
+            tag: 'Transfer Out',
+            notes: txNote || 'Sent',
+            asset: [sent1?.symbol, sent2?.symbol].filter(Boolean).join('/'),
+            amount: '',
+          });
+        }
       }
     } else if (tag === 'fee') {
       results.push({
         ...baseTx,
+        isMultiAsset: false,
         // Fee only - don't put in sent column, just fee column
         feeAmount,
         feeCurrency,
@@ -590,6 +659,68 @@ function generateCSV(transactions) {
     tx.feeAmount || '',
     tx.feeCurrency || '',
     tx.txHash || '',
+    tx.notes || '',
+    tx.tag || '',
+  ]);
+
+  const escapeCell = (cell) => {
+    const str = (cell ?? '').toString();
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  return [
+    headers.join(','),
+    ...rows.map(row => row.map(escapeCell).join(','))
+  ].join('\n');
+}
+
+// ============================================================================
+// MULTI-ASSET CSV GENERATION - Awaken Tax multi-asset format
+// https://help.awaken.tax/en/articles/10422149-how-to-format-your-csv-for-awaken-tax
+// ============================================================================
+function generateMultiAssetCSV(transactions) {
+  // Multi-asset Awaken Tax CSV columns (in order):
+  // Date, Received Quantity, Received Currency, Received Fiat Amount,
+  // Sent Quantity, Sent Currency, Sent Fiat Amount,
+  // Received Quantity 2, Received Currency 2,
+  // Sent Quantity 2, Sent Currency 2,
+  // Fee Amount, Fee Currency, Notes, Tag
+  // Note: No Transaction Hash column per Awaken template
+  const headers = [
+    'Date',
+    'Received Quantity',
+    'Received Currency',
+    'Received Fiat Amount',
+    'Sent Quantity',
+    'Sent Currency',
+    'Sent Fiat Amount',
+    'Received Quantity 2',
+    'Received Currency 2',
+    'Sent Quantity 2',
+    'Sent Currency 2',
+    'Fee Amount',
+    'Fee Currency',
+    'Notes',
+    'Tag'
+  ];
+
+  const rows = transactions.map(tx => [
+    tx.dateFormatted,             // MM/DD/YYYY HH:MM:SS UTC
+    tx.receivedQty || '',         // Received 1 Quantity
+    tx.receivedCurrency || '',    // Received 1 Currency
+    tx.receivedFiat || '',        // Received 1 Fiat Amount
+    tx.sentQty || '',             // Sent 1 Quantity
+    tx.sentCurrency || '',        // Sent 1 Currency
+    tx.sentFiat || '',            // Sent 1 Fiat Amount
+    tx.receivedQty2 || '',        // Received 2 Quantity
+    tx.receivedCurrency2 || '',   // Received 2 Currency
+    tx.sentQty2 || '',            // Sent 2 Quantity
+    tx.sentCurrency2 || '',       // Sent 2 Currency
+    tx.feeAmount || '',
+    tx.feeCurrency || '',
     tx.notes || '',
     tx.tag || '',
   ]);
@@ -1267,6 +1398,30 @@ export default function Home() {
               });
             }
           }
+          // Request prices for second received token (multi-asset)
+          if (tx.receivedCurrency2) {
+            const key = `${tx.receivedCurrency2}|${tx.timestamp}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              priceRequests.push({
+                token: tx.receivedCurrency2,
+                timestamp: tx.timestamp,
+                address: tx.receivedContractAddress2,
+              });
+            }
+          }
+          // Request prices for second sent token (multi-asset)
+          if (tx.sentCurrency2) {
+            const key = `${tx.sentCurrency2}|${tx.timestamp}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              priceRequests.push({
+                token: tx.sentCurrency2,
+                timestamp: tx.timestamp,
+                address: tx.sentContractAddress2,
+              });
+            }
+          }
         }
 
         // Fetch prices from Injective DEX trades (chain-specific) with Pyth fallback
@@ -1298,9 +1453,24 @@ export default function Home() {
             tx.sentFiat = (sentQty * sentPrice).toFixed(2);
           }
 
-          // Mark transactions with missing prices
+          // Handle second tokens for multi-asset transactions
+          const receivedQty2 = tx.receivedQty2 ? parseFloat(tx.receivedQty2) : 0;
+          const sentQty2 = tx.sentQty2 ? parseFloat(tx.sentQty2) : 0;
+          const receivedPrice2 = tx.receivedCurrency2 ? getPrice(tx.receivedCurrency2, tx.timestamp) : null;
+          const sentPrice2 = tx.sentCurrency2 ? getPrice(tx.sentCurrency2, tx.timestamp) : null;
+
+          if (receivedQty2 > 0 && receivedPrice2 !== null) {
+            tx.receivedFiat2 = (receivedQty2 * receivedPrice2).toFixed(2);
+          }
+          if (sentQty2 > 0 && sentPrice2 !== null) {
+            tx.sentFiat2 = (sentQty2 * sentPrice2).toFixed(2);
+          }
+
+          // Mark transactions with missing prices (include second tokens)
           tx.missingPrice = (receivedQty > 0 && receivedPrice === null) ||
-                            (sentQty > 0 && sentPrice === null);
+                            (sentQty > 0 && sentPrice === null) ||
+                            (receivedQty2 > 0 && receivedPrice2 === null) ||
+                            (sentQty2 > 0 && sentPrice2 === null);
 
           // Track price sources and time diffs for this transaction
           const recvSource = tx.receivedCurrency ? getPriceSource(tx.receivedCurrency, tx.timestamp) : null;
@@ -1390,16 +1560,30 @@ export default function Home() {
     }
   }, [address, startDate, endDate, txTypeFilters, selectedChainId, config]);
 
-  const downloadCSV = useCallback(() => {
-    const csv = generateCSV(transactions);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const downloadCSV = useCallback(async () => {
+    // Separate transactions into simple (standard CSV) and complex (multi-asset CSV)
+    const simpleTxs = transactions.filter(tx => !tx.isMultiAsset);
+    const multiAssetTxs = transactions.filter(tx => tx.isMultiAsset);
+
+    // Generate both CSV files
+    const standardCsv = generateCSV(simpleTxs);
+    const multiAssetCsv = generateMultiAssetCSV(multiAssetTxs);
+
+    // Create ZIP file containing both CSVs
+    const zip = new JSZip();
+    zip.file('standard.csv', standardCsv);
+    zip.file('multi_asset.csv', multiAssetCsv);
+
+    // Generate and download ZIP
+    const blob = await zip.generateAsync({ type: 'blob' });
     const link = document.createElement('a');
     const timestamp = new Date().toISOString().slice(0, 10);
+    const shortAddr = `${address.slice(0, 6)}...${address.slice(-4)}`;
     link.href = URL.createObjectURL(blob);
-    link.download = `${config.cacheKeyPrefix}-${address.slice(0, 10)}-${timestamp}-awaken.csv`;
+    link.download = `${config.cacheKeyPrefix}_${shortAddr}_${timestamp}_export.zip`;
     link.click();
     URL.revokeObjectURL(link.href);
-  }, [transactions, address]);
+  }, [transactions, address, config]);
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !loading) {
@@ -1803,10 +1987,10 @@ export default function Home() {
                 <polyline points="7 10 12 15 17 10" />
                 <line x1="12" x2="12" y1="15" y2="3" />
               </svg>
-              Download CSV for Awaken Tax
+              Download ZIP for Awaken Tax
             </button>
             <span style={{ color: '#52525b', fontSize: '14px' }}>
-              {transactions.length.toLocaleString()} rows
+              {transactions.filter(tx => !tx.isMultiAsset).length} standard + {transactions.filter(tx => tx.isMultiAsset).length} multi-asset rows
             </span>
           </div>
         )}
