@@ -25,7 +25,8 @@ async function getDefiLlamaPrice(
 ): Promise<PriceResult | null> {
   try {
     const unixTs = Math.floor(timestamp / 1000);
-    const coinId = `${chainId}:${tokenAddress}`;
+    // DefiLlama coins API uses lowercase chain identifiers
+    const coinId = `${chainId.toLowerCase()}:${tokenAddress.toLowerCase()}`;
     const url = `${DEFILLAMA_API}/prices/historical/${unixTs}/${coinId}`;
 
     const res = await fetch(url, {
@@ -57,7 +58,8 @@ async function getDefiLlamaCurrentPrice(
   tokenAddress: string
 ): Promise<PriceResult | null> {
   try {
-    const coinId = `${chainId}:${tokenAddress}`;
+    // DefiLlama coins API uses lowercase chain identifiers
+    const coinId = `${chainId.toLowerCase()}:${tokenAddress.toLowerCase()}`;
     const url = `${DEFILLAMA_API}/prices/current/${coinId}`;
 
     const res = await fetch(url, {
@@ -199,7 +201,7 @@ async function getDexPrice(
       nativeReserve = reserve0;
     }
 
-    if (tokenReserve === 0n) return null;
+    if (tokenReserve === BigInt(0)) return null;
 
     // Price in native token (both assumed 18 decimals for now)
     const priceInNative = Number(nativeReserve) / Number(tokenReserve);
