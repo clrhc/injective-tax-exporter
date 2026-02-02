@@ -247,6 +247,8 @@ Track progress here. Mark [x] when fully tested and working, [!] if no working A
 - [!] Cyber - Limited DeFi activity ($1.9M TVL)
 - [!] Redstone - Limited DeFi activity ($35K TVL)
 - [!] REI - Limited DeFi activity ($1.2K TVL)
+- [!] Metis - 44% missing prices (DefiLlama coverage poor)
+- [!] HAQQ - 100% missing prices (DefiLlama no coverage)
 
 #### DefiLlama EVM Chains To Add (NOT in exclusion list)
 Test each one. If API works, implement and mark [x]. If no API, mark [!].
