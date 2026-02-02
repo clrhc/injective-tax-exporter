@@ -1,13 +1,13 @@
-// chains/mode.ts
-// Mode chain configuration (Optimism-based L2)
+// chains/songbird.ts
+// Songbird (Flare Network canary) configuration
 
 import { ChainConfig, TokenInfo, Transaction } from './types';
 
 const NATIVE_TOKEN = {
-  symbol: 'ETH',
+  symbol: 'SGB',
   decimals: 18,
-  coingeckoId: 'ethereum',
-  wrappedAddress: '0x4200000000000000000000000000000000000006', // WETH on Mode
+  coingeckoId: 'songbird',
+  wrappedAddress: '0x02f0826ef6aD107Cfc861152B32B52fD11BaB9ED',
 };
 
 const COMMON_TOKENS: Record<string, TokenInfo> = {};
@@ -96,14 +96,14 @@ function parseTransaction(tx: any, walletAddress: string): Transaction[] {
   return results;
 }
 
-const mode: ChainConfig = {
-  id: 'mode',
-  name: 'Mode',
-  symbol: 'ETH',
-  chainId: 34443,
-  logo: 'MODE',
+const songbird: ChainConfig = {
+  id: 'songbird',
+  name: 'Songbird',
+  symbol: 'SGB',
+  chainId: 19,
+  logo: 'SGB',
 
-  defiLlamaId: 'Mode',
+  defiLlamaId: 'songbird',
 
   addressPrefix: '0x',
   addressLength: 42,
@@ -113,10 +113,10 @@ const mode: ChainConfig = {
   nativeToken: NATIVE_TOKEN,
 
   transactionApi: {
-    baseUrl: 'https://explorer.mode.network/api',
+    baseUrl: 'https://songbird-explorer.flare.network/api',
     buildUrl: (address, limit, offset) => {
       const page = Math.floor(offset / limit) + 1;
-      return `https://explorer.mode.network/api?module=account&action=txlist&address=${address}&page=${page}&offset=${limit}&sort=desc`;
+      return `https://songbird-explorer.flare.network/api?module=account&action=txlist&address=${address}&page=${page}&offset=${limit}&sort=desc`;
     },
     parseResponse: (data, address) => {
       if (data.status !== '1' || !data.result) return [];
@@ -132,14 +132,14 @@ const mode: ChainConfig = {
     }),
   },
 
-  cacheKeyPrefix: 'mode',
+  cacheKeyPrefix: 'songbird',
   commonTokens: COMMON_TOKENS,
   getTokenInfo,
   buildTokenMap: (tokens: any) => {
     const map: Record<string, TokenInfo> = {};
     const tokenList = tokens.tokens || tokens;
     for (const t of tokenList) {
-      if (t.chainId === 34443 || !t.chainId) {
+      if (t.chainId === 19 || !t.chainId) {
         const entry = { symbol: t.symbol || 'UNKNOWN', decimals: t.decimals ?? 18 };
         if (t.address) map[t.address.toLowerCase()] = entry;
       }
@@ -147,14 +147,14 @@ const mode: ChainConfig = {
     return map;
   },
 
-  explorerUrl: 'https://explorer.mode.network',
-  txUrl: (hash) => `https://explorer.mode.network/tx/${hash}`,
-  addressUrl: (addr) => `https://explorer.mode.network/address/${addr}`,
+  explorerUrl: 'https://songbird-explorer.flare.network',
+  txUrl: (hash) => `https://songbird-explorer.flare.network/tx/${hash}`,
+  addressUrl: (addr) => `https://songbird-explorer.flare.network/address/${addr}`,
 
   theme: {
-    primary: '#DFFE00',
-    gradient: 'linear-gradient(135deg, #DFFE00 0%, #B8CC00 100%)',
+    primary: '#E8185D',
+    gradient: 'linear-gradient(135deg, #E8185D 0%, #FF4B85 100%)',
   },
 };
 
-export default mode;
+export default songbird;

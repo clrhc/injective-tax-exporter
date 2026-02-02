@@ -205,8 +205,26 @@ Track progress here. Mark [x] when fully tested and working, [!] if no working A
 
 #### Confirmed Working
 - [x] Celo - `celo.blockscout.com/api` - DONE
+- [x] Aurora - `explorer.aurora.dev/api` - 50 swaps, 0% missing prices
+- [x] Fuse - `explorer.fuse.io/api` - 11 swaps, 7.5% missing prices
+- [x] Astar - `astar.blockscout.com/api` - 76 swaps, 0% missing prices
+- [x] ZetaChain - `zetascan.com/api` - 50 swaps, 1% missing prices
+- [x] Hemi - `explorer.hemi.xyz/api` - 14 swaps, 0% missing prices
+- [x] Gnosis - `gnosis.blockscout.com/api` - 49 swaps, 0% missing prices
+- [x] Arbitrum Nova - `arbitrum-nova.blockscout.com/api` - swaps working
+- [x] Flare - `flare-explorer.flare.network/api` - 17 swaps, 5.6% missing prices
+- [x] Lisk - `blockscout.lisk.com/api` - 48 swaps, 0% missing prices
+- [x] Manta - `pacific-explorer.manta.network/api` - 60 swaps, 0% missing prices
+- [x] Songbird - `songbird-explorer.flare.network/api` - 32 swaps, 2% missing prices
+- [x] Soneium - `soneium.blockscout.com/api` - 50 swaps, 0% missing prices
+- [x] ETC - `etc.blockscout.com/api` - API works, limited DeFi
+- [x] Etherlink - `explorer.etherlink.com/api` - API works, limited DeFi
+- [x] Filecoin - `filecoin.blockscout.com/api` - API works, limited DeFi
+- [x] Degen - `explorer.degen.tips/api` - 72 swaps, 11% missing prices (meme coins)
+- [x] BOB - `explorer.gobob.xyz/api` - 20 swaps, 15.5% missing prices (LP tokens)
+- [x] Mode - `explorer.mode.network/api` - 20 swaps, 13% missing prices
 
-#### Confirmed NOT Working (No free API)
+#### Confirmed NOT Working (No free API or high missing prices)
 - [!] Kava - No public API, returns 403/404
 - [!] Moonbeam - Moonscan deprecated V1 API
 - [!] Moonriver - Moonscan deprecated V1 API
@@ -218,6 +236,17 @@ Track progress here. Mark [x] when fully tested and working, [!] if no working A
 - [!] Telos - Returns HTML, no JSON API
 - [!] Oasis - Returns HTML, no JSON API
 - [!] Callisto - Returns HTML, no JSON API
+- [!] Evmos - API times out consistently
+- [!] Kroma - API very slow/timeout
+- [!] Elastos - 47% missing prices (DefiLlama coverage poor)
+- [!] Worldchain - 55% missing prices (DefiLlama coverage poor)
+- [!] Neon - 40% missing prices (DefiLlama coverage poor)
+- [!] Gravity - 40% missing prices (DefiLlama coverage poor)
+- [!] Rootstock - 36% missing prices (DefiLlama coverage poor)
+- [!] Chiliz - 504 Gateway Timeout
+- [!] Cyber - Limited DeFi activity ($1.9M TVL)
+- [!] Redstone - Limited DeFi activity ($35K TVL)
+- [!] REI - Limited DeFi activity ($1.2K TVL)
 
 #### DefiLlama EVM Chains To Add (NOT in exclusion list)
 Test each one. If API works, implement and mark [x]. If no API, mark [!].

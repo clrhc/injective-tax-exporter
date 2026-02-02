@@ -1,5 +1,5 @@
-// chains/mode.ts
-// Mode chain configuration (Optimism-based L2)
+// chains/manta.ts
+// Manta Pacific chain configuration
 
 import { ChainConfig, TokenInfo, Transaction } from './types';
 
@@ -7,7 +7,7 @@ const NATIVE_TOKEN = {
   symbol: 'ETH',
   decimals: 18,
   coingeckoId: 'ethereum',
-  wrappedAddress: '0x4200000000000000000000000000000000000006', // WETH on Mode
+  wrappedAddress: '0x0Dc808adcE2099A9F62AA87D9670745AbA741746',
 };
 
 const COMMON_TOKENS: Record<string, TokenInfo> = {};
@@ -96,14 +96,14 @@ function parseTransaction(tx: any, walletAddress: string): Transaction[] {
   return results;
 }
 
-const mode: ChainConfig = {
-  id: 'mode',
-  name: 'Mode',
+const manta: ChainConfig = {
+  id: 'manta',
+  name: 'Manta Pacific',
   symbol: 'ETH',
-  chainId: 34443,
-  logo: 'MODE',
+  chainId: 169,
+  logo: 'MANTA',
 
-  defiLlamaId: 'Mode',
+  defiLlamaId: 'manta',
 
   addressPrefix: '0x',
   addressLength: 42,
@@ -113,10 +113,10 @@ const mode: ChainConfig = {
   nativeToken: NATIVE_TOKEN,
 
   transactionApi: {
-    baseUrl: 'https://explorer.mode.network/api',
+    baseUrl: 'https://pacific-explorer.manta.network/api',
     buildUrl: (address, limit, offset) => {
       const page = Math.floor(offset / limit) + 1;
-      return `https://explorer.mode.network/api?module=account&action=txlist&address=${address}&page=${page}&offset=${limit}&sort=desc`;
+      return `https://pacific-explorer.manta.network/api?module=account&action=txlist&address=${address}&page=${page}&sort=desc`;
     },
     parseResponse: (data, address) => {
       if (data.status !== '1' || !data.result) return [];
@@ -132,14 +132,14 @@ const mode: ChainConfig = {
     }),
   },
 
-  cacheKeyPrefix: 'mode',
+  cacheKeyPrefix: 'manta',
   commonTokens: COMMON_TOKENS,
   getTokenInfo,
   buildTokenMap: (tokens: any) => {
     const map: Record<string, TokenInfo> = {};
     const tokenList = tokens.tokens || tokens;
     for (const t of tokenList) {
-      if (t.chainId === 34443 || !t.chainId) {
+      if (t.chainId === 169 || !t.chainId) {
         const entry = { symbol: t.symbol || 'UNKNOWN', decimals: t.decimals ?? 18 };
         if (t.address) map[t.address.toLowerCase()] = entry;
       }
@@ -147,14 +147,14 @@ const mode: ChainConfig = {
     return map;
   },
 
-  explorerUrl: 'https://explorer.mode.network',
-  txUrl: (hash) => `https://explorer.mode.network/tx/${hash}`,
-  addressUrl: (addr) => `https://explorer.mode.network/address/${addr}`,
+  explorerUrl: 'https://pacific-explorer.manta.network',
+  txUrl: (hash) => `https://pacific-explorer.manta.network/tx/${hash}`,
+  addressUrl: (addr) => `https://pacific-explorer.manta.network/address/${addr}`,
 
   theme: {
-    primary: '#DFFE00',
-    gradient: 'linear-gradient(135deg, #DFFE00 0%, #B8CC00 100%)',
+    primary: '#3B82F6',
+    gradient: 'linear-gradient(135deg, #3B82F6 0%, #06B6D4 100%)',
   },
 };
 
-export default mode;
+export default manta;

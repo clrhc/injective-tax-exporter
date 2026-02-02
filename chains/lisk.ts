@@ -1,5 +1,5 @@
-// chains/mode.ts
-// Mode chain configuration (Optimism-based L2)
+// chains/lisk.ts
+// Lisk chain configuration
 
 import { ChainConfig, TokenInfo, Transaction } from './types';
 
@@ -7,7 +7,7 @@ const NATIVE_TOKEN = {
   symbol: 'ETH',
   decimals: 18,
   coingeckoId: 'ethereum',
-  wrappedAddress: '0x4200000000000000000000000000000000000006', // WETH on Mode
+  wrappedAddress: '0x4200000000000000000000000000000000000006',
 };
 
 const COMMON_TOKENS: Record<string, TokenInfo> = {};
@@ -96,14 +96,14 @@ function parseTransaction(tx: any, walletAddress: string): Transaction[] {
   return results;
 }
 
-const mode: ChainConfig = {
-  id: 'mode',
-  name: 'Mode',
+const lisk: ChainConfig = {
+  id: 'lisk',
+  name: 'Lisk',
   symbol: 'ETH',
-  chainId: 34443,
-  logo: 'MODE',
+  chainId: 1135,
+  logo: 'LSK',
 
-  defiLlamaId: 'Mode',
+  defiLlamaId: 'lisk',
 
   addressPrefix: '0x',
   addressLength: 42,
@@ -113,10 +113,10 @@ const mode: ChainConfig = {
   nativeToken: NATIVE_TOKEN,
 
   transactionApi: {
-    baseUrl: 'https://explorer.mode.network/api',
+    baseUrl: 'https://blockscout.lisk.com/api',
     buildUrl: (address, limit, offset) => {
       const page = Math.floor(offset / limit) + 1;
-      return `https://explorer.mode.network/api?module=account&action=txlist&address=${address}&page=${page}&offset=${limit}&sort=desc`;
+      return `https://blockscout.lisk.com/api?module=account&action=txlist&address=${address}&page=${page}&offset=${limit}&sort=desc`;
     },
     parseResponse: (data, address) => {
       if (data.status !== '1' || !data.result) return [];
@@ -132,14 +132,14 @@ const mode: ChainConfig = {
     }),
   },
 
-  cacheKeyPrefix: 'mode',
+  cacheKeyPrefix: 'lisk',
   commonTokens: COMMON_TOKENS,
   getTokenInfo,
   buildTokenMap: (tokens: any) => {
     const map: Record<string, TokenInfo> = {};
     const tokenList = tokens.tokens || tokens;
     for (const t of tokenList) {
-      if (t.chainId === 34443 || !t.chainId) {
+      if (t.chainId === 1135 || !t.chainId) {
         const entry = { symbol: t.symbol || 'UNKNOWN', decimals: t.decimals ?? 18 };
         if (t.address) map[t.address.toLowerCase()] = entry;
       }
@@ -147,14 +147,14 @@ const mode: ChainConfig = {
     return map;
   },
 
-  explorerUrl: 'https://explorer.mode.network',
-  txUrl: (hash) => `https://explorer.mode.network/tx/${hash}`,
-  addressUrl: (addr) => `https://explorer.mode.network/address/${addr}`,
+  explorerUrl: 'https://blockscout.lisk.com',
+  txUrl: (hash) => `https://blockscout.lisk.com/tx/${hash}`,
+  addressUrl: (addr) => `https://blockscout.lisk.com/address/${addr}`,
 
   theme: {
-    primary: '#DFFE00',
-    gradient: 'linear-gradient(135deg, #DFFE00 0%, #B8CC00 100%)',
+    primary: '#0D4EA1',
+    gradient: 'linear-gradient(135deg, #0D4EA1 0%, #4070B8 100%)',
   },
 };
 
-export default mode;
+export default lisk;

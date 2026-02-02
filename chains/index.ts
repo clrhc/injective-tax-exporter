@@ -2,6 +2,7 @@
 // Export all chain configurations
 
 import { ChainConfig } from './types';
+import arbitrumNova from './arbitrum-nova';
 import astar from './astar';
 import aurora from './aurora';
 import bob from './bob';
@@ -9,13 +10,21 @@ import celo from './celo';
 import degen from './degen';
 import etc from './etc';
 import etherlink from './etherlink';
+import filecoin from './filecoin';
+import flare from './flare';
 import fuse from './fuse';
+import gnosis from './gnosis';
 import hemi from './hemi';
+import lisk from './lisk';
+import manta from './manta';
 import mode from './mode';
+import songbird from './songbird';
+import soneium from './soneium';
 import zetachain from './zetachain';
 
 // All available chains
 export const chains: Record<string, ChainConfig> = {
+  'arbitrum-nova': arbitrumNova,
   astar,
   aurora,
   bob,
@@ -23,9 +32,16 @@ export const chains: Record<string, ChainConfig> = {
   degen,
   etc,
   etherlink,
+  filecoin,
+  flare,
   fuse,
+  gnosis,
   hemi,
+  lisk,
+  manta,
   mode,
+  songbird,
+  soneium,
   zetachain,
 };
 

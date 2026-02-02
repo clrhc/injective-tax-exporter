@@ -1,13 +1,13 @@
-// chains/mode.ts
-// Mode chain configuration (Optimism-based L2)
+// chains/flare.ts
+// Flare Network configuration
 
 import { ChainConfig, TokenInfo, Transaction } from './types';
 
 const NATIVE_TOKEN = {
-  symbol: 'ETH',
+  symbol: 'FLR',
   decimals: 18,
-  coingeckoId: 'ethereum',
-  wrappedAddress: '0x4200000000000000000000000000000000000006', // WETH on Mode
+  coingeckoId: 'flare-networks',
+  wrappedAddress: '0x1D80c49BbBCd1C0911346656B529DF9E5c2F783d',
 };
 
 const COMMON_TOKENS: Record<string, TokenInfo> = {};
@@ -96,14 +96,14 @@ function parseTransaction(tx: any, walletAddress: string): Transaction[] {
   return results;
 }
 
-const mode: ChainConfig = {
-  id: 'mode',
-  name: 'Mode',
-  symbol: 'ETH',
-  chainId: 34443,
-  logo: 'MODE',
+const flare: ChainConfig = {
+  id: 'flare',
+  name: 'Flare',
+  symbol: 'FLR',
+  chainId: 14,
+  logo: 'FLR',
 
-  defiLlamaId: 'Mode',
+  defiLlamaId: 'flare',
 
   addressPrefix: '0x',
   addressLength: 42,
@@ -113,10 +113,10 @@ const mode: ChainConfig = {
   nativeToken: NATIVE_TOKEN,
 
   transactionApi: {
-    baseUrl: 'https://explorer.mode.network/api',
+    baseUrl: 'https://flare-explorer.flare.network/api',
     buildUrl: (address, limit, offset) => {
       const page = Math.floor(offset / limit) + 1;
-      return `https://explorer.mode.network/api?module=account&action=txlist&address=${address}&page=${page}&offset=${limit}&sort=desc`;
+      return `https://flare-explorer.flare.network/api?module=account&action=txlist&address=${address}&page=${page}&offset=${limit}&sort=desc`;
     },
     parseResponse: (data, address) => {
       if (data.status !== '1' || !data.result) return [];
@@ -132,14 +132,14 @@ const mode: ChainConfig = {
     }),
   },
 
-  cacheKeyPrefix: 'mode',
+  cacheKeyPrefix: 'flare',
   commonTokens: COMMON_TOKENS,
   getTokenInfo,
   buildTokenMap: (tokens: any) => {
     const map: Record<string, TokenInfo> = {};
     const tokenList = tokens.tokens || tokens;
     for (const t of tokenList) {
-      if (t.chainId === 34443 || !t.chainId) {
+      if (t.chainId === 14 || !t.chainId) {
         const entry = { symbol: t.symbol || 'UNKNOWN', decimals: t.decimals ?? 18 };
         if (t.address) map[t.address.toLowerCase()] = entry;
       }
@@ -147,14 +147,14 @@ const mode: ChainConfig = {
     return map;
   },
 
-  explorerUrl: 'https://explorer.mode.network',
-  txUrl: (hash) => `https://explorer.mode.network/tx/${hash}`,
-  addressUrl: (addr) => `https://explorer.mode.network/address/${addr}`,
+  explorerUrl: 'https://flare-explorer.flare.network',
+  txUrl: (hash) => `https://flare-explorer.flare.network/tx/${hash}`,
+  addressUrl: (addr) => `https://flare-explorer.flare.network/address/${addr}`,
 
   theme: {
-    primary: '#DFFE00',
-    gradient: 'linear-gradient(135deg, #DFFE00 0%, #B8CC00 100%)',
+    primary: '#E62058',
+    gradient: 'linear-gradient(135deg, #E62058 0%, #FF4B7D 100%)',
   },
 };
 
-export default mode;
+export default flare;
